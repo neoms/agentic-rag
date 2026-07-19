@@ -54,6 +54,8 @@ def chunk_texts(
     for text in texts:
         chunks = chunker.split_text(text)
         for chunk in chunks:
+            if not chunk or not chunk.strip():
+                continue
             doc = Document(page_content=chunk, metadata=dict(base_metadata))
             all_docs.append(doc)
 

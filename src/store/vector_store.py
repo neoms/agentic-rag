@@ -59,9 +59,14 @@ class VectorStore:
         Returns:
             添加的文档数量
         """
+        # 过滤空文档（page_content 为空或仅空白字符）
+        valid_docs = [doc for doc in documents if doc.page_content and doc.page_content.strip()]
+        if len(valid_docs) < len(documents):
+            logger.warning("过滤掉 %d 个空文档块", len(documents) - len(valid_docs))
+
         total = 0
-        for i in range(0, len(documents), batch_size):
-            batch = documents[i:i + batch_size]
+        for i in range(0, len(valid_docs), batch_size):
+            batch = valid_docs[i:i + batch_size]
             self.vector_store.add_documents(batch)
             total += len(batch)
             logger.info("已入库 %d 个文档块", total)
