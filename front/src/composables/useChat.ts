@@ -170,6 +170,10 @@ export function useChat() {
       isStreaming: true,
     }
     addMessage(assistantMsg)
+    const msgIndex = messages.value.length - 1
+
+    // 等待浏览器渲染空消息气泡 + 光标，确保流式效果从初始状态开始可见
+    await new Promise(r => requestAnimationFrame(r))
 
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
@@ -193,52 +197,68 @@ export function useChat() {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+        // 统一换行符：sse_starlette 使用 \r\n，标准化为 \n
+        buffer = buffer.replace(/\r\n/g, '\n')
+        // SSE 事件以 \n\n 分隔，不完整的部分留在 buffer 等待下一 chunk
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
 
-        for (const line of lines) {
-          if (line.startsWith('event: ')) continue
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue
 
-          if (line.startsWith('data: ')) {
-            const eventType = getCurrentEventType(lines, line)
-            const data = line.slice(6)
+          const lines = rawEvent.split('\n')
+          let eventType = 'token'
+          const dataLines: string[] = []
 
-            switch (eventType) {
-              case 'source':
-                try {
-                  streamSources.value = JSON.parse(data)
-                  assistantMsg.sources = streamSources.value
-                } catch {}
-                break
-              case 'path':
-                try {
-                  streamAgentPath.value = JSON.parse(data)
-                  assistantMsg.agent_path = streamAgentPath.value
-                } catch {}
-                break
-              case 'token':
-                streamingContent.value += data
-                assistantMsg.content = streamingContent.value
-                break
-              case 'done':
-                assistantMsg.isStreaming = false
-                break
-              case 'error':
-                try {
-                  const err = JSON.parse(data)
-                  error.value = err.detail || '流式对话出错'
-                } catch {
-                  error.value = data || '流式对话出错'
-                }
-                assistantMsg.isStreaming = false
-                break
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim()
+            } else if (line.startsWith('data: ')) {
+              dataLines.push(line.slice(6))
             }
           }
+
+          const data = dataLines.join('\n')
+
+          switch (eventType) {
+            case 'source':
+              try {
+                streamSources.value = JSON.parse(data)
+                messages.value[msgIndex].sources = streamSources.value
+              } catch {}
+              break
+            case 'path':
+              try {
+                streamAgentPath.value = JSON.parse(data)
+                messages.value[msgIndex].agent_path = streamAgentPath.value
+              } catch {}
+              break
+            case 'token':
+              streamingContent.value += data
+              messages.value[msgIndex].content = streamingContent.value
+              break
+            case 'done':
+              messages.value[msgIndex].isStreaming = false
+              break
+            case 'error':
+              try {
+                const err = JSON.parse(data)
+                error.value = err.detail || '流式对话出错'
+              } catch {
+                error.value = data || '流式对话出错'
+              }
+              messages.value[msgIndex].isStreaming = false
+              break
+          }
+
+          // 用 macrotask 让渡控制权，使浏览器能在事件之间重绘，产生逐字流式效果
+          // nextTick（微任务）不够，因为微任务不会触发浏览器 repaint
+          await new Promise(r => setTimeout(r, 0))
         }
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : '流式对话失败'
-      assistantMsg.isStreaming = false
+      messages.value[msgIndex].isStreaming = false
     } finally {
       if (reader) {
         try { reader.releaseLock() } catch {}
@@ -246,19 +266,6 @@ export function useChat() {
       isStreaming.value = false
       sending.value = false
     }
-  }
-
-  function getCurrentEventType(lines: string[], currentLine: string): string {
-    const idx = lines.indexOf(currentLine)
-    if (idx > 0 && lines[idx - 1].startsWith('event: ')) {
-      return lines[idx - 1].slice(7).trim()
-    }
-    for (let i = idx - 1; i >= 0; i--) {
-      if (lines[i].startsWith('event: ')) {
-        return lines[i].slice(7).trim()
-      }
-    }
-    return 'token'
   }
 
   return {
