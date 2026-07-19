@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useChat } from '../composables/useChat'
 import ChatPanel from '../components/chat/ChatPanel.vue'
 import SessionHistory from '../components/chat/SessionHistory.vue'
@@ -6,13 +7,29 @@ import SessionHistory from '../components/chat/SessionHistory.vue'
 const {
   messages,
   sending,
+  sessionId,
   mode,
   error,
+  sessions,
   enableWebSearch,
   enableReflection,
   isStreaming,
   send,
+  loadSession,
+  newSession,
 } = useChat()
+
+const historyLoading = ref(false)
+
+async function onSelectSession(id: string) {
+  historyLoading.value = true
+  await loadSession(id)
+  historyLoading.value = false
+}
+
+function onNewSession() {
+  newSession()
+}
 </script>
 
 <template>
@@ -35,6 +52,12 @@ const {
     </div>
 
     <!-- 会话历史侧栏 -->
-    <SessionHistory />
+    <SessionHistory
+      :sessions="sessions"
+      :activeSessionId="sessionId"
+      :loading="historyLoading"
+      @select-session="onSelectSession"
+      @new-session="onNewSession"
+    />
   </div>
 </template>

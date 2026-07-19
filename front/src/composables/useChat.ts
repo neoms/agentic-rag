@@ -1,13 +1,23 @@
 import { ref } from 'vue'
 import type { UIMessage, ChatMode, SourceDocument, AgenticChatResponse } from '../types'
-import { simpleChat, agenticChat, streamChat } from '../api/chat'
+import { simpleChat, agenticChat, streamChat, getChatHistory } from '../api/chat'
+
+export interface SessionSummary {
+  session_id: string
+  preview: string
+  message_count: number
+  updated_at: number
+}
 
 export function useChat() {
   const messages = ref<UIMessage[]>([])
   const sending = ref(false)
-  const sessionId = ref('default')
+  const sessionId = ref(generateSessionId())
   const mode = ref<ChatMode>('simple')
   const error = ref<string | null>(null)
+
+  // 会话列表（本地维护）
+  const sessions = ref<SessionSummary[]>([])
 
   // Agent 模式选项
   const enableWebSearch = ref(false)
@@ -19,8 +29,67 @@ export function useChat() {
   const streamAgentPath = ref<string[]>([])
   const isStreaming = ref(false)
 
+  function generateSessionId(): string {
+    return crypto.randomUUID().slice(0, 8)
+  }
+
   function addMessage(msg: UIMessage) {
     messages.value.push(msg)
+  }
+
+  function updateSessionPreview() {
+    const userMsgs = messages.value.filter(m => m.role === 'user')
+    const preview = userMsgs.length > 0
+      ? userMsgs[userMsgs.length - 1].content.slice(0, 40) + (userMsgs[userMsgs.length - 1].content.length > 40 ? '...' : '')
+      : '空会话'
+
+    const existing = sessions.value.find(s => s.session_id === sessionId.value)
+    if (existing) {
+      existing.preview = preview
+      existing.message_count = messages.value.length
+      existing.updated_at = Date.now()
+      // 重新排序：最新在前
+      sessions.value.sort((a, b) => b.updated_at - a.updated_at)
+    } else if (messages.value.length > 0) {
+      sessions.value.unshift({
+        session_id: sessionId.value,
+        preview,
+        message_count: messages.value.length,
+        updated_at: Date.now(),
+      })
+    }
+  }
+
+  async function loadSession(id: string) {
+    if (sending.value) return
+
+    error.value = null
+    sessionId.value = id
+    messages.value = []
+
+    try {
+      const result = await getChatHistory(id)
+      if (result && result.messages.length > 0) {
+        messages.value = result.messages.map(msg => ({
+          id: crypto.randomUUID(),
+          role: msg.role,
+          content: msg.content,
+          timestamp: Date.now(),
+        }))
+        updateSessionPreview()
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '加载会话历史失败'
+    }
+  }
+
+  function newSession() {
+    sessionId.value = generateSessionId()
+    messages.value = []
+    error.value = null
+    streamingContent.value = ''
+    streamSources.value = []
+    streamAgentPath.value = []
   }
 
   async function send(query: string) {
@@ -41,6 +110,8 @@ export function useChat() {
     } else {
       await sendNormal(query)
     }
+
+    updateSessionPreview()
   }
 
   async function sendNormal(query: string) {
@@ -182,7 +253,6 @@ export function useChat() {
     if (idx > 0 && lines[idx - 1].startsWith('event: ')) {
       return lines[idx - 1].slice(7).trim()
     }
-    // 向前查找最近的 event 行
     for (let i = idx - 1; i >= 0; i--) {
       if (lines[i].startsWith('event: ')) {
         return lines[i].slice(7).trim()
@@ -191,17 +261,13 @@ export function useChat() {
     return 'token'
   }
 
-  function clearMessages() {
-    messages.value = []
-    error.value = null
-  }
-
   return {
     messages,
     sending,
     sessionId,
     mode,
     error,
+    sessions,
     enableWebSearch,
     enableReflection,
     streamingContent,
@@ -209,6 +275,7 @@ export function useChat() {
     streamAgentPath,
     isStreaming,
     send,
-    clearMessages,
+    loadSession,
+    newSession,
   }
 }
