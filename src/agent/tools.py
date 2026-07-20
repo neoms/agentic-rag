@@ -3,9 +3,36 @@
 import math
 import logging
 from langchain_core.tools import tool
+from ddgs import DDGS
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _duckduckgo_search(query: str, max_results: int = 5) -> list[dict]:
+    """通过 DuckDuckGo 执行网页搜索
+
+    Args:
+        query: 搜索关键词
+        max_results: 最大结果数
+
+    Returns:
+        [{"title": ..., "url": ..., "snippet": ...}, ...]
+    """
+    results: list[dict] = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                })
+    except Exception as e:
+        logger.warning("DuckDuckGo 搜索失败: %s", e)
+
+    logger.info("DuckDuckGo 搜索 '%s' → %d 条结果", query, len(results))
+    return results
 
 
 @tool
@@ -19,7 +46,6 @@ def calculator(expression: str) -> str:
         计算结果
     """
     try:
-        # 允许使用的安全函数
         safe_dict = {
             "abs": abs, "round": round, "min": min, "max": max,
             "sum": sum, "pow": pow,
@@ -41,15 +67,19 @@ def web_search_tool(query: str) -> str:
         query: 搜索关键词
 
     Returns:
-        搜索结果摘要
+        搜索结果摘要（含来源链接）
     """
-    # 注意：生产环境应接入真正的搜索 API（如 SERP API / Bing API）
-    # 此处提供一个提示性的占位实现
     logger.info("联网搜索请求: %s", query)
-    return (
-        f'[联网搜索结果] 关于 "{query}" 的搜索：\n'
-        "（提示：生产环境请配置 SERP API Key 或 Bing Search API 以启用真实联网搜索）"
-    )
+    results = _duckduckgo_search(query, max_results=5)
+    if not results:
+        return f"未找到与 '{query}' 相关的搜索结果。"
+
+    lines = [f'联网搜索 "{query}" 结果：']
+    for i, r in enumerate(results, 1):
+        lines.append(f"\n[{i}] {r['snippet']}")
+        if r["url"]:
+            lines.append(f"    链接: {r['url']}")
+    return "\n".join(lines)
 
 
 # 工具列表

@@ -18,7 +18,7 @@ from src.agent.prompts import (
     CHECK_HALLUCINATION_SYSTEM,
     CHECK_HALLUCINATION_USER,
 )
-from src.agent.tools import ALL_TOOLS
+from src.agent.tools import ALL_TOOLS, _duckduckgo_search
 from src.backend.llm import create_llm_client, create_fast_llm, create_strong_llm
 from src.store.vector_store import vector_store
 from src.memory.manager import memory_manager
@@ -99,7 +99,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
 
     response = llm.invoke(messages)
     result = response.content.strip().upper()
-    relevant = "RELEVANT" in result
+    relevant = result == "RELEVANT"
 
     logger.info("评估结果: %s (raw='%s')", "RELEVANT" if relevant else "IRRELEVANT", result)
 
@@ -155,7 +155,9 @@ def generate(state: AgentState) -> dict[str, Any]:
 
     # 格式化文档上下文
     docs_text = "\n\n---\n\n".join(
-        f"来源: {doc.metadata.get('filename', 'unknown')}\n内容: {doc.page_content}"
+        f"来源: {doc.metadata.get('filename', doc.metadata.get('url', 'unknown'))}\n"
+        f"链接: {doc.metadata.get('url', '无')}\n"
+        f"内容: {doc.page_content}"
         for doc in documents[:8]
     )
 
@@ -219,13 +221,54 @@ def check_hallucination(state: AgentState) -> dict[str, Any]:
 
     response = llm.invoke(messages)
     result = response.content.strip().upper()
-    has_hallucination = "FAILED" in result
+    has_hallucination = result == "FAILED"
 
     logger.info("幻觉检测: %s", "FAILED" if has_hallucination else "PASSED")
 
     return {
         "hallucination_detected": has_hallucination,
         "agent_path": ["check_hallucination"],
+    }
+
+
+def web_search_node(state: AgentState) -> dict[str, Any]:
+    """联网搜索节点：向量库无相关文档时，调用 DuckDuckGo 搜索作为降级方案
+
+    搜索结果转为 Document 列表，metadata 中包含 source='web'、url、title 等字段，
+    供 generate 节点和前端 SourcePanel 使用。
+    """
+    query = state["query"]
+    logger.info("联网搜索节点: query='%s'", query)
+
+    results = _duckduckgo_search(query, max_results=5)
+    if not results:
+        logger.info("联网搜索无结果")
+        return {
+            "documents": [],
+            "documents_relevant": False,
+            "agent_path": ["web_search (no results)"],
+        }
+
+    # 构造 Document 对象，metadata 包含 URL 信息供前端展示
+    documents: list[Document] = []
+    for r in results:
+        doc = Document(
+            page_content=f"[{r['title']}] {r['snippet']}",
+            metadata={
+                "source": "web",
+                "url": r["url"],
+                "title": r["title"],
+                "filename": f"网页: {r['title'][:30]}",
+            },
+        )
+        documents.append(doc)
+
+    logger.info("联网搜索完成: %d 条结果", len(documents))
+
+    return {
+        "documents": documents,
+        "documents_relevant": True,  # 标记相关，跳过 transform_query 循环
+        "agent_path": ["web_search"],
     }
 
 

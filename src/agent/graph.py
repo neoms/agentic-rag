@@ -5,7 +5,9 @@
                           ├── [RELEVANT] → generate → check_hallucination
                           │                              ├── [PASSED] → END
                           │                              └── [FAILED] → END
-                          └── [IRRELEVANT] → transform_query → retrieve (循环, 最多 max_iterations 次)
+                          └── [IRRELEVANT] →
+                              ├── enable_web_search → web_search → generate → ...
+                              └── !enable_web_search → transform_query → retrieve (循环)
 """
 
 import logging
@@ -21,6 +23,7 @@ from src.agent.nodes import (
     transform_query,
     generate,
     check_hallucination,
+    web_search_node,
     tool_node,
 )
 from src.config.settings import settings
@@ -28,16 +31,26 @@ from src.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def should_continue_after_grade(state: AgentState) -> Literal["generate", "transform_query"]:
+def should_continue_after_grade(state: AgentState) -> Literal["generate", "transform_query", "web_search"]:
     """文档评估后的条件路由
 
     - 文档相关 → 进入答案生成
-    - 文档不相关且未超过重试次数 → 进入查询重写
-    - 文档不相关且超过重试次数 → 也进入生成（降级处理）
+    - 文档不相关 + 开启联网搜索 → 联网搜索（降级方案）
+    - 文档不相关 + 未超过重试次数 → 查询重写
+    - 文档不相关 + 超过重试次数 → 进入生成（降级处理）
     """
+    enable_web = state.get("enable_web_search", False)
+    logger.info("路由决策: documents_relevant=%s, enable_web_search=%s",
+                state.get("documents_relevant", False), enable_web)
+
     if state.get("documents_relevant", False):
-        logger.info("路由: 文档相关 → generate")
+        logger.info("路由: 文档相关 → generate (跳过联网搜索)")
         return "generate"
+
+    # 向量库无相关文档且开启了联网搜索 → 走联网搜索降级
+    if enable_web:
+        logger.info("路由: 文档不相关 + 联网搜索已开启 → web_search")
+        return "web_search"
 
     iteration = state.get("iteration_count", 0)
     max_iter = state.get("max_iterations", 3)
@@ -74,15 +87,18 @@ def build_agent_graph() -> StateGraph:
     节点:
         retrieve        - 语义检索
         grade_documents  - 文档相关性评估（自反思）
+        web_search       - 联网搜索降级（向量库无结果时）
         transform_query  - 查询重写优化
         generate         - 答案生成
         check_hallucination - 幻觉检测
-        tools            - Tool Calling（联网搜索、计算器等）
+        tools            - Tool Calling（计算器等）
 
     流转:
         START → retrieve → grade_documents
                  ↑            ├── [RELEVANT] → generate → check_hallucination → END
-                 │            └── [IRRELEVANT] → transform_query ──┘
+                 │            └── [IRRELEVANT] →
+                 │                ├── web_search → generate → ...
+                 │                └── transform_query ──┘
                  └────────── (循环, max_iterations 次)
     """
     workflow = StateGraph(AgentState)
@@ -90,6 +106,7 @@ def build_agent_graph() -> StateGraph:
     # 添加节点
     workflow.add_node("retrieve", retrieve)
     workflow.add_node("grade_documents", grade_documents)
+    workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
     workflow.add_node("generate", generate)
     workflow.add_node("check_hallucination", check_hallucination)
@@ -101,15 +118,19 @@ def build_agent_graph() -> StateGraph:
     # 边：retrieve → grade_documents
     workflow.add_edge("retrieve", "grade_documents")
 
-    # 条件边：grade_documents → generate 或 transform_query
+    # 条件边：grade_documents → generate / web_search / transform_query
     workflow.add_conditional_edges(
         "grade_documents",
         should_continue_after_grade,
         {
             "generate": "generate",
+            "web_search": "web_search",
             "transform_query": "transform_query",
         },
     )
+
+    # 边：web_search → generate（联网搜索后直接生成答案）
+    workflow.add_edge("web_search", "generate")
 
     # 边：transform_query → retrieve（重新检索循环）
     workflow.add_edge("transform_query", "retrieve")

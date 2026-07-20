@@ -185,10 +185,12 @@ class RAGService:
 
         # 流式生成答案
         if documents:
-            docs_text = "\n\n---\n\n".join(
-                f"来源: {doc.metadata.get('filename', 'unknown')}\n内容: {doc.page_content}"
-                for doc in documents[:5]
-            )
+            doc_parts: list[str] = []
+            for doc in documents[:5]:
+                src = doc.metadata.get("url") or doc.metadata.get("filename", "unknown")
+                url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
+                doc_parts.append(f"来源: {src}{url_info}\n内容: {doc.page_content}")
+            docs_text = "\n\n---\n\n".join(doc_parts)
             chat_history = memory_manager.get_chat_history_string(request.session_id)
 
             prompt = f"""你是一个专业的知识问答助手。请基于提供的文档上下文回答用户问题。

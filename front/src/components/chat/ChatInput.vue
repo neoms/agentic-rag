@@ -18,8 +18,34 @@ const emit = defineEmits<{
 }>()
 
 const query = ref('')
+const webSearchBtn = ref<HTMLElement | null>(null)
+const showWebSearchTip = ref(false)
+const tipStyle = ref<Record<string, string>>({})
+let webSearchTipTimer: ReturnType<typeof setTimeout> | null = null
 
 const isAgentMode = computed(() => props.mode === 'agentic' || props.mode === 'stream')
+
+function updateTipPosition() {
+  if (!webSearchBtn.value) return
+  const rect = webSearchBtn.value.getBoundingClientRect()
+  tipStyle.value = {
+    left: `${rect.left + rect.width / 2}px`,
+    top: `${rect.top - 8}px`,
+  }
+}
+
+function handleWebSearchToggle() {
+  const nextVal = !props.enableWebSearch
+  emit('update:enableWebSearch', nextVal)
+  if (nextVal) {
+    updateTipPosition()
+    showWebSearchTip.value = true
+    if (webSearchTipTimer) clearTimeout(webSearchTipTimer)
+    webSearchTipTimer = setTimeout(() => {
+      showWebSearchTip.value = false
+    }, 3000)
+  }
+}
 
 function handleSend() {
   if (!query.value.trim() || props.sending) return
@@ -49,7 +75,8 @@ const modeOptions: { value: ChatMode; label: string; desc: string }[] = [
       class="flex items-center gap-3 px-4 pt-3 pb-1"
     >
       <button
-        @click="emit('update:enableWebSearch', !enableWebSearch)"
+        ref="webSearchBtn"
+        @click="handleWebSearchToggle"
         :class="[
           'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-all duration-200 border',
           enableWebSearch
@@ -121,4 +148,35 @@ const modeOptions: { value: ChatMode; label: string; desc: string }[] = [
       </button>
     </div>
   </div>
+
+  <!-- Teleport 到 body 避免被 overflow-hidden 裁切 -->
+  <Teleport to="body">
+    <Transition name="tip-fade">
+      <div
+        v-if="showWebSearchTip"
+        :style="tipStyle"
+        class="fixed -translate-x-1/2 -translate-y-full bg-slate-700 text-slate-200 text-[11px] px-2.5 py-1.5 rounded-lg whitespace-nowrap shadow-lg border border-slate-600/50 z-[9999] pointer-events-none"
+      >
+        该功能需要连接国际互联网
+        <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-700 rotate-45 border-r border-b border-slate-600/50" />
+      </div>
+    </Transition>
+  </Teleport>
 </template>
+
+<style scoped>
+.tip-fade-enter-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.tip-fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.tip-fade-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.tip-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+</style>
