@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 20
     retrieval_similarity_threshold: float = 0.5
 
+    # ========== 重排序 ==========
+    rerank_enabled: bool = True
+    rerank_model: str = "gte-rerank"  # 百炼文本重排序模型
+    rerank_top_k: int = 5  # 重排序后保留的文档数
+
     # ========== 对话记忆 ==========
     memory_window_size: int = 20
 

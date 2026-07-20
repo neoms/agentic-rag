@@ -1,13 +1,13 @@
 """LangGraph 状态图构建 - Agent 节点编排与条件路由
 
 状态流转图：
-    START → retrieve → grade_documents
-                          ├── [RELEVANT] → generate → check_hallucination
-                          │                              ├── [PASSED] → END
-                          │                              └── [FAILED] → END
-                          └── [IRRELEVANT] →
-                              ├── enable_web_search → web_search → generate → ...
-                              └── !enable_web_search → transform_query → retrieve (循环)
+    START → retrieve → rerank_documents → grade_documents
+                                            ├── [RELEVANT] → generate → check_hallucination
+                                            │                              ├── [PASSED] → END
+                                            │                              └── [FAILED] → END
+                                            └── [IRRELEVANT] →
+                                                ├── enable_web_search → web_search → generate → ...
+                                                └── !enable_web_search → transform_query → retrieve (循环)
 """
 
 import logging
@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from src.agent.state import AgentState
 from src.agent.nodes import (
     retrieve,
+    rerank_documents_node,
     grade_documents,
     transform_query,
     generate,
@@ -85,7 +86,8 @@ def build_agent_graph() -> StateGraph:
     """构建 Agent 状态图
 
     节点:
-        retrieve        - 语义检索
+        retrieve        - 语义检索 + MMR 混合
+        rerank_documents - 重排序精排
         grade_documents  - 文档相关性评估（自反思）
         web_search       - 联网搜索降级（向量库无结果时）
         transform_query  - 查询重写优化
@@ -94,17 +96,18 @@ def build_agent_graph() -> StateGraph:
         tools            - Tool Calling（计算器等）
 
     流转:
-        START → retrieve → grade_documents
-                 ↑            ├── [RELEVANT] → generate → check_hallucination → END
-                 │            └── [IRRELEVANT] →
-                 │                ├── web_search → generate → ...
-                 │                └── transform_query ──┘
-                 └────────── (循环, max_iterations 次)
+        START → retrieve → rerank_documents → grade_documents
+                 ↑                               ├── [RELEVANT] → generate → check_hallucination → END
+                 │                               └── [IRRELEVANT] →
+                 │                                   ├── web_search → generate → ...
+                 │                                   └── transform_query ──┘
+                 └────────────────────── (循环, max_iterations 次)
     """
     workflow = StateGraph(AgentState)
 
     # 添加节点
     workflow.add_node("retrieve", retrieve)
+    workflow.add_node("rerank_documents", rerank_documents_node)
     workflow.add_node("grade_documents", grade_documents)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
@@ -115,8 +118,9 @@ def build_agent_graph() -> StateGraph:
     # 设置入口
     workflow.set_entry_point("retrieve")
 
-    # 边：retrieve → grade_documents
-    workflow.add_edge("retrieve", "grade_documents")
+    # 边：retrieve → rerank_documents → grade_documents
+    workflow.add_edge("retrieve", "rerank_documents")
+    workflow.add_edge("rerank_documents", "grade_documents")
 
     # 条件边：grade_documents → generate / web_search / transform_query
     workflow.add_conditional_edges(
