@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     llm_model_strong: str = "qwen-max"    # 高质量场景（最终生成）
 
     # Embedding 模型
-    embedding_model: str = "text-embedding-v2"
+    embedding_model: str = "text-embedding-v4"
 
     # ========== ChromaDB ==========
     chroma_persist_dir: str = "chroma_data"
@@ -37,11 +37,11 @@ class Settings(BaseSettings):
     chunk_overlap: int = 100
 
     # ========== 检索 ==========
-    retrieval_top_k: int = 5
+    retrieval_top_k: int = 20
     retrieval_similarity_threshold: float = 0.5
 
     # ========== 对话记忆 ==========
-    memory_window_size: int = 5
+    memory_window_size: int = 20
 
     # ========== 文件上传 ==========
     max_upload_size_mb: int = 10

@@ -1,16 +1,17 @@
 # Agentic RAG
 
-基于 LangGraph 构建的智能检索增强生成（Agentic RAG）系统。支持多策略检索、自反思评估、工具调用、流式输出等高级能力。前后端分离架构，后端 FastAPI + 前端 Vue 3。
+基于 LangGraph 构建的智能检索增强生成（Agentic RAG）系统。支持多策略检索、自反思评估、联网搜索降级、工具调用、流式输出等高级能力。前后端分离架构，后端 FastAPI + 前端 Vue 3。
 
 ## 架构特点
 
-- **多策略检索**：语义检索、关键字检索、混合检索、查询重写、结果重排序，由 LangGraph 状态图编排流转
-- **Agent 智能体**：自反思能力，评估检索质量并自动决定是否需要重新检索或优化查询；支持 Tool Calling（联网搜索、计算器等）
-- **百炼平台统一接入**：LLM 和 Embedding 均使用阿里云百炼（OpenAI 兼容协议）
+- **多策略检索**：语义检索 + MMR 多样性检索，由 LangGraph 状态图编排流转
+- **Agent 智能体**：自反思能力（文档评估→查询重写→幻觉检测）；支持 Tool Calling（联网搜索、计算器）
+- **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
+- **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 `langchain_community.DashScopeEmbeddings` + `dashscope` SDK
 - **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
 - **FastAPI + SSE 流式输出**：自动生成 Swagger 文档
-- **ChromaDB 本地持久化**：零外部依赖，数据自动保存在 `chroma_data/` 目录
-- **Vue 3 前端**：Vite + TypeScript + TailwindCSS，支持三种对话模式、拖拽上传、Agent 路径可视化
+- **ChromaDB 本地持久化**：零外部依赖，数据保存在 `chroma_data/` 目录
+- **Vue 3 前端**：Vite + TypeScript + TailwindCSS，支持三种对话模式、会话历史、拖拽上传
 
 ## 快速开始
 
@@ -34,10 +35,10 @@ cp .env.example .env
 | `LLM_MODEL` | 默认 LLM 模型 | `qwen-plus` |
 | `LLM_MODEL_FAST` | 快速评估模型 | `qwen-turbo` |
 | `LLM_MODEL_STRONG` | 强生成模型 | `qwen-max` |
-| `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v2` |
+| `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `chroma_data` |
-| `RETRIEVAL_TOP_K` | 检索结果数 | `5` |
-| `MEMORY_WINDOW_SIZE` | 对话记忆窗口 | `5` |
+| `RETRIEVAL_TOP_K` | 检索结果数 | `20` |
+| `MEMORY_WINDOW_SIZE` | 对话记忆窗口 | `20` |
 | `MAX_UPLOAD_SIZE_MB` | 上传文件大小限制 | `10` |
 
 ### 2. 启动后端
@@ -48,29 +49,20 @@ uv sync
 
 # 启动应用
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-
-# 或者直接
-python main.py
 ```
 
-启动后访问 http://localhost:8000/docs 查看 Swagger 文档。向量数据自动保存在项目根目录 `chroma_data/` 中。
+启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
 
 ### 3. 启动前端
 
 ```bash
 cd front
 npm install
-npm run dev
+npm run dev       # 启动开发服务器（端口 3000，API 代理到 8000）
+npm run build     # 构建生产包到 front/dist/
 ```
 
-前端运行在 http://localhost:3000，API 请求自动代理到后端 `localhost:8000`。
-
-构建生产包：
-
-```bash
-cd front
-npm run build    # 输出到 front/dist/
-```
+前端运行在 http://localhost:3000。
 
 ## API 接口
 
@@ -89,10 +81,10 @@ npm run build    # 输出到 front/dist/
 
 ```
 START → retrieve → grade_documents
-         ↑            ├── [RELEVANT] → generate → check_hallucination
-         │            │                               ├── [PASSED] → END
-         │            │                               └── [FAILED] → generate (重试)
-         │            └── [IRRELEVANT] → transform_query ──┘
+         ↑            ├── [RELEVANT] → generate → check_hallucination → END
+         │            └── [IRRELEVANT] →
+         │                ├── enable_web_search → web_search → generate → ...
+         │                └── !enable_web_search → transform_query ──┘
          └────────── (最多循环 max_iterations 次)
 ```
 
@@ -101,26 +93,36 @@ START → retrieve → grade_documents
 | 节点 | 功能 | 模型 |
 |------|------|------|
 | `retrieve` | 语义检索 + MMR 多样性检索，合并去重 | Embedding |
-| `grade_documents` | 评估检索文档相关性 | qwen-turbo（快速） |
+| `grade_documents` | 严格评估检索文档是否能有效回答用户问题 | qwen-turbo（快速） |
+| `web_search` | 向量库无匹配时，通过 DuckDuckGo 搜索网页作为降级方案 | 无（直接 HTTP 调用） |
 | `transform_query` | 不相关时自动重写查询 | qwen-turbo（快速） |
-| `generate` | 基于检索文档生成回答 | qwen-max（强模型） |
+| `generate` | 基于检索文档或网页搜索结果生成回答 | qwen-max（强模型） |
 | `check_hallucination` | 检测答案是否与文档一致，不一致则重试 | qwen-turbo（快速） |
+
+### 联网搜索流程
+
+1. 用户在 Agent/流式模式下开启"联网搜索"
+2. `retrieve` 从向量库检索
+3. `grade_documents` 严格评估：文档是否包含能直接回答问题的关键信息？
+4. 如果 **不相关** 且开启了联网搜索 → `web_search` 节点调用 DuckDuckGo 搜索
+5. 搜索结果转为 Document（带 URL metadata），直接进入 `generate` 生成回答
+6. 前端 SourcePanel 以蓝色卡片展示网页来源，含可点击的 URL 链接
 
 ## 前端功能
 
-- **三种对话模式**：基础 RAG / Agent 自反思 / Agent 流式输出（SSE）
-- **Agent 选项**：联网搜索开关、自反思开关（Agent 模式下可配置）
-- **来源文档展示**：可展开查看检索到的文档片段及相似度分数
-- **Agent 路径可视化**：彩色标签展示 Agent 执行的节点流转和反思轮数
+- **三种对话模式**：基础 RAG / Agent 自反思 / Agent 流式输出（SSE 逐字渲染）
+- **Agent 选项**：联网搜索开关（开启时弹出提示气泡）、自反思开关
+- **来源文档展示**：可展开查看，区分本地文档（绿色）与网页来源（蓝色，可点击跳转）
+- **Agent 路径可视化**：彩色标签展示 Agent 执行的节点流转
+- **会话历史**：按会话陈列，点击加载历史消息，支持新建会话
 - **知识库管理**：拖拽上传（PDF/MD/TXT），查看/删除已索引文档
-- **会话历史**：侧栏展示当前会话的消息历史
 - **实时健康监控**：顶部栏显示服务状态，30 秒自动刷新
 
 ## 项目结构
 
 ```
 agentic-rag/
-├── main.py                    # 项目入口（等同于 uvicorn src.main:app）
+├── main.py                    # 项目入口
 ├── pyproject.toml             # Python 项目配置（UV 包管理）
 ├── .env                       # 环境变量（需自行创建）
 ├── src/                       # 后端源码
@@ -137,15 +139,15 @@ agentic-rag/
 │   │   └── common.py          # 通用模型
 │   ├── agent/                 # LangGraph Agent
 │   │   ├── state.py           # AgentState 定义
-│   │   ├── graph.py           # StateGraph 构建
-│   │   ├── nodes.py           # 核心节点实现
+│   │   ├── graph.py           # StateGraph 构建 + 路由逻辑
+│   │   ├── nodes.py           # 核心节点（retrieve/grade/web_search/generate/check）
 │   │   ├── prompts.py         # Prompt 模板
-│   │   └── tools.py           # Tool Calling 工具
+│   │   └── tools.py           # Tool Calling（计算器 + DuckDuckGo 搜索）
 │   ├── backend/               # AI 后端客户端
 │   │   ├── llm.py             # ChatOpenAI 工厂
-│   │   └── embedding.py       # OpenAIEmbeddings 工厂
+│   │   └── embedding.py       # DashScopeEmbeddings 工厂
 │   ├── pipeline/              # 文档处理管道
-│   │   ├── loader.py          # 多格式加载器
+│   │   ├── loader.py          # 多格式加载器（PDF/MD/TXT）
 │   │   ├── chunker.py         # 文本分块
 │   │   └── indexer.py         # 文档索引器
 │   ├── store/                 # 向量存储
@@ -153,13 +155,10 @@ agentic-rag/
 │   ├── memory/                # 对话记忆
 │   │   └── manager.py         # 多会话隔离 + 滑动窗口
 │   └── services/              # 业务服务层
-│       ├── rag_service.py     # RAG 对话服务
+│       ├── rag_service.py     # RAG 对话服务（含流式处理）
 │       └── document_service.py # 文档管理服务
 ├── front/                     # 前端源码
-│   ├── index.html
-│   ├── package.json
 │   ├── vite.config.ts         # Vite 配置（API 代理到 8000）
-│   ├── tailwind.config.js
 │   └── src/
 │       ├── main.ts            # Vue 应用入口
 │       ├── App.vue            # 根组件
@@ -167,11 +166,11 @@ agentic-rag/
 │       ├── types/index.ts     # TypeScript 类型定义
 │       ├── api/               # API 调用封装
 │       │   ├── client.ts      # fetch 通用封装
-│       │   ├── chat.ts        # 对话 API
+│       │   ├── chat.ts        # 对话 API（含 SSE 流式）
 │       │   ├── documents.ts   # 文档 API
 │       │   └── health.ts      # 健康检查 API
 │       ├── composables/       # Vue 组合式函数
-│       │   ├── useChat.ts     # 对话状态管理
+│       │   ├── useChat.ts     # 对话状态管理（含流式 SSE 解析 + 会话管理）
 │       │   ├── useDocuments.ts # 文档管理
 │       │   └── useHealth.ts   # 健康状态轮询
 │       ├── views/             # 页面视图
@@ -193,8 +192,10 @@ agentic-rag/
 |------|------|
 | `fastapi` + `uvicorn` | Web 框架与服务器 |
 | `langgraph` | Agent 状态图编排 |
-| `langchain` + `langchain-openai` + `langchain-chroma` | RAG 组件链 |
+| `langchain` + `langchain-openai` + `langchain-chroma` + `langchain-community` | RAG 组件链 |
 | `chromadb` | 向量数据库（本地持久化） |
+| `dashscope` | 百炼 Embedding SDK |
+| `ddgs` | DuckDuckGo 网页搜索（联网搜索降级） |
 | `pypdf2` + `markdown` | 文档解析 |
 | `pydantic-settings` | 配置管理 |
 | `sse-starlette` | SSE 流式输出 |
