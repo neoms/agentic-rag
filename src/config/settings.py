@@ -1,7 +1,11 @@
 """应用配置中心 - 基于 Pydantic Settings 管理所有配置项"""
 
 from pathlib import Path
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 显式加载 .env 到 os.environ，确保 LangSmith 等非 Settings 字段的环境变量也能被第三方库读取
+load_dotenv()
 
 
 class Settings(BaseSettings):

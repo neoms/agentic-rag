@@ -54,7 +54,7 @@ async def upload_document(
     try:
         result = service.upload_document(content, file.filename)
         logger.info("API 响应: POST /documents/upload → doc_id=%s, chunks=%d",
-                     result.get("doc_id", "?"), result.get("chunk_count", 0))
+                     result.doc_id, result.chunk_count)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
