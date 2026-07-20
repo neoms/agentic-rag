@@ -13,13 +13,15 @@ def create_embedding_client(
     """创建百炼 Embedding 客户端
 
     Args:
-        model: 嵌入模型名，默认使用 settings.embedding_model（text-embedding-v2）
+        model: 嵌入模型名，默认使用 settings.embedding_model
 
     Returns:
         DashScopeEmbeddings 实例
     """
+    final_model = model or settings.embedding_model
+    logger.info("创建 Embedding 客户端: model=%s", final_model)
     return DashScopeEmbeddings(
-        model=model or settings.embedding_model,
+        model=final_model,
         dashscope_api_key=settings.dashscope_api_key,
     )
 
@@ -32,5 +34,6 @@ def get_embedding_client() -> DashScopeEmbeddings:
     """获取全局单例 Embedding 客户端"""
     global _embedding_client
     if _embedding_client is None:
+        logger.info("首次初始化全局 Embedding 客户端")
         _embedding_client = create_embedding_client()
     return _embedding_client

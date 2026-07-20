@@ -54,8 +54,11 @@ def calculator(expression: str) -> str:
             "pi": math.pi, "e": math.e,
         }
         result = eval(expression, {"__builtins__": {}}, safe_dict)
-        return f"计算结果：{result}"
+        output = f"计算结果：{result}"
+        logger.info("计算器: '%s' → %s", expression, result)
+        return output
     except Exception as e:
+        logger.warning("计算器错误: '%s' → %s", expression, e)
         return f"计算出错：{str(e)}"
 
 
@@ -72,8 +75,9 @@ def web_search_tool(query: str) -> str:
     logger.info("联网搜索请求: %s", query)
     results = _duckduckgo_search(query, max_results=5)
     if not results:
+        logger.warning("联网搜索无结果: %s", query)
         return f"未找到与 '{query}' 相关的搜索结果。"
-
+    logger.info("联网搜索成功: %d 条结果", len(results))
     lines = [f'联网搜索 "{query}" 结果：']
     for i, r in enumerate(results, 1):
         lines.append(f"\n[{i}] {r['snippet']}")

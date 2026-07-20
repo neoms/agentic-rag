@@ -11,16 +11,11 @@ class DocumentService:
     """文档管理服务"""
 
     def upload_document(self, file_bytes: bytes, filename: str) -> DocumentUploadResponse:
-        """上传并索引一个文档
-
-        Args:
-            file_bytes: 文件二进制数据
-            filename: 原始文件名
-
-        Returns:
-            DocumentUploadResponse
-        """
+        """上传并索引一个文档"""
+        logger.info("[document_service] 上传文档: %s, size=%d bytes", filename, len(file_bytes))
         result = document_indexer.ingest(file_bytes, filename)
+        logger.info("[document_service] 文档处理完成: doc_id=%s, chunks=%d",
+                     result["doc_id"], result["chunk_count"])
         return DocumentUploadResponse(
             doc_id=result["doc_id"],
             filename=result["filename"],
@@ -31,6 +26,7 @@ class DocumentService:
     def list_documents(self) -> list[DocumentInfo]:
         """列出所有已索引的文档"""
         docs = document_indexer.list_documents()
+        logger.info("[document_service] 列出文档: %d 个", len(docs))
         return [
             DocumentInfo(
                 doc_id=d["doc_id"],
@@ -43,6 +39,7 @@ class DocumentService:
 
     def delete_document(self, doc_id: str) -> int:
         """删除指定文档及其所有向量块"""
+        logger.info("[document_service] 删除文档: %s", doc_id)
         count = document_indexer.delete_document(doc_id)
         logger.info("文档 %s 已删除，移除 %d 个向量块", doc_id, count)
         return count

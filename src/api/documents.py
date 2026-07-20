@@ -31,6 +31,8 @@ async def upload_document(
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
 
+    logger.info("API 请求: POST /documents/upload, filename=%s", file.filename)
+
     ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
     if ext not in [f".{e}" for e in settings.allowed_extensions_list]:
         raise HTTPException(
@@ -48,8 +50,11 @@ async def upload_document(
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="文件内容为空")
 
+    logger.info("文件已读取: %s, size=%d bytes", file.filename, len(content))
     try:
         result = service.upload_document(content, file.filename)
+        logger.info("API 响应: POST /documents/upload → doc_id=%s, chunks=%d",
+                     result.get("doc_id", "?"), result.get("chunk_count", 0))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -67,7 +72,9 @@ async def upload_document(
 async def list_documents(
     service: DocumentService = Depends(get_document_service),
 ):
+    logger.info("API 请求: GET /documents")
     docs = service.list_documents()
+    logger.info("API 响应: GET /documents → total=%d", len(docs))
     return DocumentListResponse(documents=docs, total=len(docs))
 
 
@@ -81,9 +88,11 @@ async def delete_document(
     doc_id: str,
     service: DocumentService = Depends(get_document_service),
 ):
+    logger.info("API 请求: DELETE /documents/%s", doc_id)
     count = service.delete_document(doc_id)
     if count == 0:
         raise HTTPException(status_code=404, detail=f"文档 {doc_id} 不存在或无向量块")
+    logger.info("API 响应: DELETE /documents/%s → 删除了 %d 个向量块", doc_id, count)
     return DocumentDeleteResponse(
         doc_id=doc_id,
         message=f"文档删除成功，已移除 {count} 个向量块",

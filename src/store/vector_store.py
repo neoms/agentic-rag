@@ -119,9 +119,13 @@ class VectorStore:
             文档列表
         """
         k = top_k or settings.retrieval_top_k
-        return self.vector_store.max_marginal_relevance_search(
+        logger.info("MMR 检索: query='%s', top_k=%d, fetch_k=%d, lambda=%.1f",
+                     query[:80], k, fetch_k, lambda_mult)
+        docs = self.vector_store.max_marginal_relevance_search(
             query, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult,
         )
+        logger.info("MMR 检索完成: %d 个结果", len(docs))
+        return docs
 
     def _get_or_create_collection(self):
         """安全获取或创建集合（集合不存在时自动创建）"""

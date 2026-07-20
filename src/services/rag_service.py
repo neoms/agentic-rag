@@ -1,5 +1,6 @@
 """Agent/RAG 服务层 - 对话交互、Agent 编排的业务逻辑"""
 
+import time
 import logging
 import json
 from typing import AsyncIterator
@@ -28,9 +29,11 @@ class RAGService:
 
     def simple_rag(self, request: ChatRequest) -> ChatResponse:
         """简单 RAG：检索 + 生成，不走 Agent 图"""
+        t0 = time.time()
         query = request.query
         session_id = request.session_id
         top_k = request.top_k
+        logger.info("[simple_rag] 请求: session=%s, query='%s', top_k=%s", session_id, query[:80], top_k)
 
         # 检索
         results = vector_store.search(query, top_k=top_k)
@@ -43,10 +46,12 @@ class RAGService:
             )
             for doc, score in results
         ]
+        logger.info("[simple_rag] 检索完成: %d 个结果", len(sources))
 
         # 生成答案
         if not documents:
             answer = "未找到相关文档，请尝试上传相关文档或换个问题。"
+            logger.info("[simple_rag] 无文档, 返回兜底回答")
         else:
             docs_text = "\n\n---\n\n".join(
                 f"来源: {doc.metadata.get('filename', 'unknown')}\n内容: {doc.page_content}"
@@ -79,6 +84,9 @@ class RAGService:
         # 记录对话
         memory_manager.add_interaction(session_id, query, answer)
 
+        elapsed = time.time() - t0
+        logger.info("[simple_rag] 完成: answer_len=%d, sources=%d, elapsed=%.2fs", len(answer), len(sources), elapsed)
+
         return ChatResponse(
             answer=answer,
             session_id=session_id,
@@ -87,6 +95,10 @@ class RAGService:
 
     def agentic_rag(self, request: AgenticChatRequest) -> AgenticChatResponse:
         """Agent 模式 RAG：走完整的 LangGraph 状态图（含自反思、查询重写、幻觉检测等）"""
+        t0 = time.time()
+        logger.info("[agentic_rag] 请求: session=%s, query='%s', web_search=%s, reflection=%s",
+                     request.session_id, request.query[:80], request.enable_web_search, request.enable_reflection)
+
         initial_state: AgentState = {
             "query": request.query,
             "session_id": request.session_id,
@@ -127,6 +139,10 @@ class RAGService:
         # 记录对话
         memory_manager.add_interaction(request.session_id, request.query, answer)
 
+        elapsed = time.time() - t0
+        logger.info("[agentic_rag] 完成: answer_len=%d, path=%s, iterations=%d, docs=%d, elapsed=%.2fs",
+                     len(answer), agent_path, iteration_count, len(documents), elapsed)
+
         return AgenticChatResponse(
             answer=answer,
             session_id=request.session_id,
@@ -140,6 +156,10 @@ class RAGService:
         self, request: AgenticChatRequest
     ) -> AsyncIterator[StreamEvent]:
         """Agent 模式流式 RAG（SSE）"""
+        t0 = time.time()
+        logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
+                     request.session_id, request.query[:80], request.enable_web_search)
+
         initial_state: AgentState = {
             "query": request.query,
             "session_id": request.session_id,
@@ -159,10 +179,13 @@ class RAGService:
 
         # 先跑状态图获取检索结果和 Agent 路径
         config = {"configurable": {"thread_id": request.session_id}}
+        logger.info("[stream_rag] 开始执行 Agent 状态图...")
         result = agent_graph.invoke(initial_state, config)
 
         agent_path = result.get("agent_path", [])
         documents = result.get("documents", [])
+        logger.info("[stream_rag] 状态图完成: path=%s, docs=%d, graph_elapsed=%.2fs",
+                     agent_path, len(documents), time.time() - t0)
 
         # 发送检索结果来源
         sources = [
@@ -220,17 +243,22 @@ class RAGService:
 
             # 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)
+            logger.info("[stream_rag] 流式生成完成: answer_len=%d", len(full_answer))
         else:
             msg = "未找到相关文档。"
             yield StreamEvent(event="token", data=msg)
             memory_manager.add_interaction(request.session_id, request.query, msg)
+            logger.info("[stream_rag] 无文档，返回兜底回答")
 
         # 完成
         yield StreamEvent(event="done", data="")
+        logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
 
     def get_history(self, session_id: str) -> ChatHistoryResponse:
         """获取会话历史"""
+        logger.info("[get_history] session=%s", session_id)
         messages = memory_manager.get_history(session_id)
+        logger.info("[get_history] 返回 %d 条消息", len(messages))
         return ChatHistoryResponse(
             session_id=session_id,
             messages=[

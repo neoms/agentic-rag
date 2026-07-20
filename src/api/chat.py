@@ -33,8 +33,11 @@ async def simple_chat(
     request: ChatRequest,
     service: RAGService = Depends(get_rag_service),
 ):
+    logger.info("API 请求: POST /chat/simple, session=%s, query='%s'", request.session_id, request.query[:80])
     try:
-        return service.simple_rag(request)
+        response = service.simple_rag(request)
+        logger.info("API 响应: POST /chat/simple → answer_len=%d, sources=%d", len(response.answer), len(response.sources))
+        return response
     except Exception as e:
         logger.exception("简单 RAG 对话失败")
         raise HTTPException(status_code=500, detail=str(e))
@@ -50,8 +53,13 @@ async def agentic_chat(
     request: AgenticChatRequest,
     service: RAGService = Depends(get_rag_service),
 ):
+    logger.info("API 请求: POST /chat/agentic, session=%s, query='%s', web_search=%s",
+                request.session_id, request.query[:80], request.enable_web_search)
     try:
-        return service.agentic_rag(request)
+        response = service.agentic_rag(request)
+        logger.info("API 响应: POST /chat/agentic → answer_len=%d, path=%s, iterations=%d",
+                     len(response.answer), response.agent_path, response.reflection_count)
+        return response
     except Exception as e:
         logger.exception("Agent 对话失败")
         raise HTTPException(status_code=500, detail=str(e))
@@ -72,6 +80,8 @@ async def stream_chat(
     request: AgenticChatRequest,
     service: RAGService = Depends(get_rag_service),
 ):
+    logger.info("API 请求: POST /chat/stream, session=%s, query='%s', web_search=%s",
+                request.session_id, request.query[:80], request.enable_web_search)
     async def event_generator():
         try:
             async for event in service.agentic_rag_stream(request):
@@ -98,4 +108,5 @@ async def get_history(
     session_id: str,
     service: RAGService = Depends(get_rag_service),
 ):
+    logger.info("API 请求: GET /chat/history/%s", session_id)
     return service.get_history(session_id)
