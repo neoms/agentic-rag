@@ -1,13 +1,15 @@
 # Agentic RAG
 
-基于 LangGraph 构建的智能检索增强生成（Agentic RAG）系统。支持多策略检索、自反思评估、联网搜索降级、工具调用、流式输出等高级能力。前后端分离架构，后端 FastAPI + 前端 Vue 3。
+基于 LangGraph 构建的智能检索增强生成（Agentic RAG）系统。支持多策略检索、重排序精排、自反思评估、联网搜索降级、工具调用、流式输出等高级能力。前后端分离架构，后端 FastAPI + 前端 Vue 3。
 
 ## 架构特点
 
-- **多策略检索**：语义检索 + MMR 多样性检索，由 LangGraph 状态图编排流转
-- **Agent 智能体**：自反思能力（文档评估→查询重写→幻觉检测）；支持 Tool Calling（联网搜索、计算器）
+- **多策略检索**：语义检索 + MMR 多样性检索，混合合并去重
+- **重排序精排**：百炼 `gte-rerank` 模型对检索结果二次排序，提升 Top-K 文档质量
+- **Agent 智能体**：自反思能力（文档评估 → 查询重写 → 幻觉检测）；支持 Tool Calling（联网搜索、计算器）
 - **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
-- **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 `langchain_community.DashScopeEmbeddings` + `dashscope` SDK
+- **LangSmith 评估**：8 维度自动化评估流水线（正确性/忠实度/相关性/完整性/上下文精度/延迟等）
+- **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
 - **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
 - **FastAPI + SSE 流式输出**：自动生成 Swagger 文档
 - **ChromaDB 本地持久化**：零外部依赖，数据保存在 `chroma_data/` 目录
@@ -37,9 +39,20 @@ cp .env.example .env
 | `LLM_MODEL_STRONG` | 强生成模型 | `qwen-max` |
 | `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `chroma_data` |
-| `RETRIEVAL_TOP_K` | 检索结果数 | `20` |
+| `RETRIEVAL_TOP_K` | 检索候选数 | `20` |
+| `RERANK_ENABLED` | 是否启用重排序 | `true` |
+| `RERANK_MODEL` | 重排序模型 | `gte-rerank` |
+| `RERANK_TOP_K` | 重排序后保留数 | `5` |
 | `MEMORY_WINDOW_SIZE` | 对话记忆窗口 | `20` |
 | `MAX_UPLOAD_SIZE_MB` | 上传文件大小限制 | `10` |
+
+LangSmith 追踪（可选）：
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `LANGSMITH_API_KEY` | LangSmith API Key | `lsv2_pt_xxx` |
+| `LANGSMITH_PROJECT` | LangSmith 项目名 | `agentic-rag` |
+| `LANGSMITH_TRACING` | 是否启用追踪 | `true` |
 
 ### 2. 启动后端
 
@@ -80,12 +93,12 @@ npm run build     # 构建生产包到 front/dist/
 ## LangGraph Agent 状态图
 
 ```
-START → retrieve → grade_documents
-         ↑            ├── [RELEVANT] → generate → check_hallucination → END
-         │            └── [IRRELEVANT] →
-         │                ├── enable_web_search → web_search → generate → ...
-         │                └── !enable_web_search → transform_query ──┘
-         └────────── (最多循环 max_iterations 次)
+START → retrieve → rerank_documents → grade_documents
+         ↑                               ├── [RELEVANT] → generate → check_hallucination → END
+         │                               └── [IRRELEVANT] →
+         │                                   ├── enable_web_search → web_search → generate → ...
+         │                                   └── !enable_web_search → transform_query ──┘
+         └────────────────────────── (最多循环 max_iterations 次)
 ```
 
 核心节点：
@@ -93,20 +106,65 @@ START → retrieve → grade_documents
 | 节点 | 功能 | 模型 |
 |------|------|------|
 | `retrieve` | 语义检索 + MMR 多样性检索，合并去重 | Embedding |
-| `grade_documents` | 严格评估检索文档是否能有效回答用户问题 | qwen-turbo（快速） |
-| `web_search` | 向量库无匹配时，通过 DuckDuckGo 搜索网页作为降级方案 | 无（直接 HTTP 调用） |
-| `transform_query` | 不相关时自动重写查询 | qwen-turbo（快速） |
-| `generate` | 基于检索文档或网页搜索结果生成回答 | qwen-max（强模型） |
-| `check_hallucination` | 检测答案是否与文档一致，不一致则重试 | qwen-turbo（快速） |
+| `rerank_documents` | 百炼 TextReRank 对合并文档做二次精排 | `gte-rerank` |
+| `grade_documents` | 严格评估检索文档是否能有效回答用户问题 | qwen-turbo |
+| `web_search` | 向量库无匹配时，通过 DuckDuckGo 搜索网页作为降级方案 | 无（HTTP 调用） |
+| `transform_query` | 不相关时自动重写查询 | qwen-turbo |
+| `generate` | 基于检索文档或网页搜索结果生成回答 | qwen-max |
+| `check_hallucination` | 检测答案是否与文档一致，不一致则重试 | qwen-turbo |
+
+### 检索流程详述
+
+1. **语义检索**：`similarity_search_with_relevance_scores`，按阈值 0.5 过滤
+2. **MMR 多样性检索**：`max_marginal_relevance_search`，lambda_mult=0.7
+3. **合并去重**：按 `page_content` 去重
+4. **重排序**：百炼 `gte-rerank` 模型对合并结果做精排，保留 Top K 文档，按 relevance_score 降序
 
 ### 联网搜索流程
 
 1. 用户在 Agent/流式模式下开启"联网搜索"
-2. `retrieve` 从向量库检索
-3. `grade_documents` 严格评估：文档是否包含能直接回答问题的关键信息？
+2. `retrieve` → `rerank_documents` → 从向量库检索并精排
+3. `grade_documents` 评估：文档是否包含能直接回答问题的关键信息？
 4. 如果 **不相关** 且开启了联网搜索 → `web_search` 节点调用 DuckDuckGo 搜索
 5. 搜索结果转为 Document（带 URL metadata），直接进入 `generate` 生成回答
 6. 前端 SourcePanel 以蓝色卡片展示网页来源，含可点击的 URL 链接
+
+## LangSmith 评估
+
+项目内置 8 维度自动化评估流水线，可对 RAG 系统做全方位质量评测。
+
+### 评估指标
+
+| 指标 | 说明 |
+|------|------|
+| `correctness` | 答案与标准答案的事实一致性 |
+| `faithfulness` | ★ 答案是否忠实于检索文档（反幻觉检测） |
+| `answer_relevance` | 答案是否直接有效回应用户问题 |
+| `completeness` | 答案是否完整覆盖问题要点 |
+| `context_precision` | ★ 检索文档中真正有用的比例（去噪音） |
+| `retrieval_relevance` | 检索文档与问题的语义相关性 |
+| `answer_length` | 答案长度是否合理 |
+| `latency` | 端到端响应延迟 |
+
+### 运行评估
+
+```bash
+# 运行 v1 版本评估
+uv run python eval/run_eval.py --version v1
+```
+
+评估完成后，结果自动保存到 `eval/v1/results/`（JSON + Markdown 报告）。
+
+### 新增评估版本
+
+```bash
+mkdir -p eval/v2/sample_docs eval/v2/results
+# 1. 放入测试文档到 eval/v2/sample_docs/
+# 2. 创建 eval/v2/dataset.jsonl（每行一个 {"question": "...", "answer": "..."}）
+uv run python eval/run_eval.py --version v2
+```
+
+评估器使用 qwen-turbo 作为 LLM 评判者，所有结果同步上传至 LangSmith Dashboard 可在线查看。
 
 ## 前端功能
 
@@ -140,12 +198,13 @@ agentic-rag/
 │   ├── agent/                 # LangGraph Agent
 │   │   ├── state.py           # AgentState 定义
 │   │   ├── graph.py           # StateGraph 构建 + 路由逻辑
-│   │   ├── nodes.py           # 核心节点（retrieve/grade/web_search/generate/check）
+│   │   ├── nodes.py           # 核心节点（retrieve/rerank/grade/generate/check...）
 │   │   ├── prompts.py         # Prompt 模板
 │   │   └── tools.py           # Tool Calling（计算器 + DuckDuckGo 搜索）
 │   ├── backend/               # AI 后端客户端
-│   │   ├── llm.py             # ChatOpenAI 工厂
-│   │   └── embedding.py       # DashScopeEmbeddings 工厂
+│   │   ├── llm.py             # ChatOpenAI 工厂（fast/strong/generic 三档）
+│   │   ├── embedding.py       # DashScopeEmbeddings 工厂
+│   │   └── reranker.py        # 百炼 TextReRank 重排序
 │   ├── pipeline/              # 文档处理管道
 │   │   ├── loader.py          # 多格式加载器（PDF/MD/TXT）
 │   │   ├── chunker.py         # 文本分块
@@ -157,6 +216,12 @@ agentic-rag/
 │   └── services/              # 业务服务层
 │       ├── rag_service.py     # RAG 对话服务（含流式处理）
 │       └── document_service.py # 文档管理服务
+├── eval/                      # LangSmith 评估
+│   ├── run_eval.py            # 评估脚本（--version 参数化）
+│   └── v1/                    # 版本目录（可扩展 v2, v3...）
+│       ├── sample_docs/       # 测试文档
+│       ├── dataset.jsonl      # 测试数据集（Q&A）
+│       └── results/           # 评估结果（JSON + Markdown）
 ├── front/                     # 前端源码
 │   ├── vite.config.ts         # Vite 配置（API 代理到 8000）
 │   └── src/
@@ -194,7 +259,8 @@ agentic-rag/
 | `langgraph` | Agent 状态图编排 |
 | `langchain` + `langchain-openai` + `langchain-chroma` + `langchain-community` | RAG 组件链 |
 | `chromadb` | 向量数据库（本地持久化） |
-| `dashscope` | 百炼 Embedding SDK |
+| `dashscope` | 百炼 LLM / Embedding / Rerank SDK |
+| `langsmith` | LLM 追踪与评估 |
 | `ddgs` | DuckDuckGo 网页搜索（联网搜索降级） |
 | `pypdf2` + `markdown` | 文档解析 |
 | `pydantic-settings` | 配置管理 |

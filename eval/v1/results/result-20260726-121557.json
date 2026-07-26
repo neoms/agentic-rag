@@ -1,0 +1,27 @@
+{
+  "version": "v1",
+  "experiment_name": "agentic-rag-v1-7b801132",
+  "timestamp": "20260726-121557",
+  "num_examples": 10,
+  "averages": {
+    "correctness": 0.98,
+    "faithfulness": 1.0,
+    "answer_relevance": 1.0,
+    "completeness": 0.98,
+    "context_precision": 0.92,
+    "retrieval_relevance": 0.58,
+    "answer_length": 1.0,
+    "latency": 0.73
+  },
+  "overall_average": 0.8987,
+  "metric_descriptions": {
+    "correctness": "答案与标准答案的事实一致性",
+    "faithfulness": "答案是否忠实于检索文档（反幻觉检测）",
+    "answer_relevance": "答案是否直接回应用户问题",
+    "completeness": "答案是否完整覆盖问题要点",
+    "context_precision": "检索文档中真正有用的比例（去噪音）",
+    "retrieval_relevance": "检索文档与问题的语义相关性",
+    "answer_length": "答案长度合理性",
+    "latency": "端到端响应延迟（秒）"
+  }
+}
