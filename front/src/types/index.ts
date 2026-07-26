@@ -50,7 +50,7 @@ export interface ChatHistoryResponse {
 }
 
 // ===== SSE 流式事件 =====
-export type SSEEventType = 'source' | 'path' | 'token' | 'done' | 'error'
+export type SSEEventType = 'source' | 'path' | 'token' | 'done' | 'error' | 'hallucination'
 
 export interface SSEEvent {
   type: SSEEventType
@@ -97,4 +97,5 @@ export interface UIMessage {
   reflection_count?: number
   tool_calls?: Record<string, string | number | boolean>[]
   isStreaming?: boolean
+  hallucination_passed?: boolean
 }

@@ -9,6 +9,8 @@ const props = defineProps<{
 
 const nodeColors: Record<string, string> = {
   retrieve: 'bg-blue-400/10 text-blue-400 border-blue-400/20',
+  rerank_documents: 'bg-violet-400/10 text-violet-400 border-violet-400/20',
+  rerank: 'bg-violet-400/10 text-violet-400 border-violet-400/20',
   grade_documents: 'bg-amber-400/10 text-amber-400 border-amber-400/20',
   transform_query: 'bg-purple-400/10 text-purple-400 border-purple-400/20',
   generate: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
@@ -18,6 +20,8 @@ const nodeColors: Record<string, string> = {
 
 const nodeLabels: Record<string, string> = {
   retrieve: '检索',
+  rerank_documents: '重排序',
+  rerank: '重排序',
   grade_documents: '评估相关性',
   transform_query: '查询重写',
   generate: '生成回答',
@@ -28,8 +32,9 @@ const nodeLabels: Record<string, string> = {
 const uniquePath = computed(() => {
   const seen = new Set<string>()
   return props.path.filter(n => {
-    if (seen.has(n)) return false
-    seen.add(n)
+    const base = n.replace(/\s*\(.*\)\s*/, '')
+    if (seen.has(base)) return false
+    seen.add(base)
     return true
   })
 })
@@ -53,6 +58,7 @@ const uniquePath = computed(() => {
           class="w-3 h-3 text-slate-600"
         />
       </template>
+
       <span
         v-if="reflectionCount > 0"
         class="flex items-center gap-1 text-[10px] text-slate-500"

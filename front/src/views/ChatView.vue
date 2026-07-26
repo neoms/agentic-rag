@@ -13,6 +13,7 @@ const {
   enableWebSearch,
   enableReflection,
   isStreaming,
+  hallucinationResults,
   send,
   loadSession,
   newSession,
@@ -42,6 +43,7 @@ function onNewSession() {
         :enableWebSearch="enableWebSearch"
         :enableReflection="enableReflection"
         :isStreaming="isStreaming"
+        :hallucinationResults="hallucinationResults"
         @send="send"
         @update:enableWebSearch="enableWebSearch = $event"
         @update:enableReflection="enableReflection = $event"

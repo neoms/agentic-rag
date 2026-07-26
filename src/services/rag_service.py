@@ -5,8 +5,11 @@ import logging
 import json
 from typing import AsyncIterator
 
+from langchain_core.messages import HumanMessage
+
 from src.agent.graph import agent_graph
 from src.agent.state import AgentState
+from src.agent.prompts import CHECK_HALLUCINATION_SYSTEM, CHECK_HALLUCINATION_USER
 from src.models.chat import (
     ChatRequest,
     AgenticChatRequest,
@@ -19,7 +22,7 @@ from src.models.chat import (
 )
 from src.store.vector_store import vector_store
 from src.memory.manager import memory_manager
-from src.backend.llm import create_strong_llm
+from src.backend.llm import create_strong_llm, create_fast_llm
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +186,10 @@ class RAGService:
         result = agent_graph.invoke(initial_state, config)
 
         agent_path = result.get("agent_path", [])
+        # 流式模式下幻觉检测必然跳过（答案在外部流式生成），过滤掉避免误解
+        agent_path = [p for p in agent_path if "skipped" not in p]
+        # 统一 generate 标签
+        agent_path = [p.replace(" (streaming)", "") for p in agent_path]
         documents = result.get("documents", [])
         logger.info("[stream_rag] 状态图完成: path=%s, docs=%d, graph_elapsed=%.2fs",
                      agent_path, len(documents), time.time() - t0)
@@ -240,6 +247,60 @@ class RAGService:
                 if chunk.content:
                     full_answer += chunk.content
                     yield StreamEvent(event="token", data=chunk.content)
+
+            # 流式生成完成后，进行幻觉检测（返回 JSON 含忠实度百分数）
+            hallucination_passed = True
+            hallucination_faithfulness = 100.0
+            try:
+                docs_for_check = "\n---\n".join(
+                    f"[文档 {i+1}] {doc.page_content[:500]}"
+                    for i, doc in enumerate(documents[:8])
+                )
+                check_llm = create_fast_llm()
+                check_messages = [
+                    HumanMessage(content=CHECK_HALLUCINATION_SYSTEM),
+                    HumanMessage(
+                        content=(
+                            CHECK_HALLUCINATION_USER.format(
+                                documents=docs_for_check,
+                                answer=full_answer,
+                            )
+                            + "\n\n输出要求：请返回一个 JSON 对象，包含两个字段："
+                            '"passed" (布尔值，true 表示答案忠实于文档，false 表示存在编造)，'
+                            '"faithfulness" (浮点数，0.0~100.0，精确到小数点后一位，表示答案对文档的忠实度百分比)。'
+                            '只输出 JSON，不要输出其他内容。'
+                            '示例：{"passed": true, "faithfulness": 92.5}'
+                        ),
+                    ),
+                ]
+                check_response = check_llm.invoke(check_messages)
+                check_raw = check_response.content.strip()
+                # 从 LLM 返回中提取 JSON
+                import re as _re
+                json_match = _re.search(r'\{[^{}]*\}', check_raw)
+                if json_match:
+                    check_data = json.loads(json_match.group())
+                    hallucination_faithfulness = float(check_data.get("faithfulness", 100))
+                    hallucination_faithfulness = max(0.0, min(100.0, round(hallucination_faithfulness, 1)))
+                    hallucination_passed = check_data.get("passed", True)
+                else:
+                    hallucination_passed = "PASSED" in check_raw.upper() or "true" in check_raw.lower()
+                logger.info(
+                    "[stream_rag] 幻觉检测: faithfulness=%.1f%%, passed=%s",
+                    hallucination_faithfulness,
+                    str(hallucination_passed),
+                )
+            except Exception as e:
+                logger.warning("[stream_rag] 幻觉检测异常: %s", e)
+
+            yield StreamEvent(
+                event="hallucination",
+                data=json.dumps({
+                    "passed": hallucination_passed,
+                    "result": "PASSED" if hallucination_passed else "FAILED",
+                    "faithfulness": hallucination_faithfulness,
+                }, ensure_ascii=False),
+            )
 
             # 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)

@@ -28,6 +28,9 @@ export function useChat() {
   const streamAgentPath = ref<string[]>([])
   const isStreaming = ref(false)
 
+  // 幻觉检测结果 — 独立 ref，key 为消息 ID
+  const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>({})
+
   function generateSessionId(): string {
     return crypto.randomUUID().slice(0, 8)
   }
@@ -117,6 +120,7 @@ export function useChat() {
       isStreaming: true,
     }
     addMessage(assistantMsg)
+    const assistantId = assistantMsg.id
     const msgIndex = messages.value.length - 1
 
     // 等待浏览器渲染空消息气泡 + 光标
@@ -185,6 +189,15 @@ export function useChat() {
             case 'done':
               messages.value[msgIndex].isStreaming = false
               break
+            case 'hallucination':
+              try {
+                const hr = JSON.parse(data)
+                hallucinationResults.value = {
+                  ...hallucinationResults.value,
+                  [assistantId]: { passed: hr.passed, faithfulness: hr.faithfulness },
+                }
+              } catch {}
+              break
             case 'error':
               try {
                 const err = JSON.parse(data)
@@ -225,6 +238,7 @@ export function useChat() {
     streamSources,
     streamAgentPath,
     isStreaming,
+    hallucinationResults,
     send,
     loadSession,
     newSession,

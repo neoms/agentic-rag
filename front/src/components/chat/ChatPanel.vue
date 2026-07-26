@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { Bot } from 'lucide-vue-next'
+import { Bot, ShieldCheck, ShieldAlert } from 'lucide-vue-next'
 import type { UIMessage } from '../../types'
 import MessageBubble from './MessageBubble.vue'
 import ChatInput from './ChatInput.vue'
@@ -14,6 +14,7 @@ const props = defineProps<{
   enableWebSearch: boolean
   enableReflection: boolean
   isStreaming: boolean
+  hallucinationResults: Record<string, { passed: boolean; faithfulness: number }>
 }>()
 
 const emit = defineEmits<{
@@ -76,7 +77,7 @@ function handleSend(query: string) {
           <div
             v-for="item in ['检索增强', 'Agent 反思', '流式输出']"
             :key="item"
-            class="px-3 py-1.5 rounded-lg border border-slate-700/50 text-xs text-slate-400"
+            class="px-3 py-1.5 rounded-lg border border-slate-700%0 text-xs text-slate-400"
           >
             {{ item }}
           </div>
@@ -101,6 +102,27 @@ function handleSend(query: string) {
           :path="msg.agent_path"
           :reflectionCount="msg.reflection_count ?? 0"
         />
+
+        <!-- 幻觉检测结果（含忠实度分数） -->
+        <div
+          v-if="msg.role === 'assistant' && msg.isStreaming === false && msg.content.length > 0"
+          class="px-3 pb-1"
+        >
+          <span
+            v-if="hallucinationResults[msg.id]?.passed === true"
+            class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-400/10 text-emerald-400 border-emerald-400/20"
+          >
+            <ShieldCheck class="w-3 h-3" />
+            可信度 {{ hallucinationResults[msg.id].faithfulness }}%
+          </span>
+          <span
+            v-else-if="hallucinationResults[msg.id]?.passed === false"
+            class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border bg-red-400/10 text-red-400 border-red-400/20"
+          >
+            <ShieldAlert class="w-3 h-3" />
+            可信度 {{ hallucinationResults[msg.id].faithfulness }}%
+          </span>
+        </div>
 
         <!-- 来源文档面板 -->
         <SourcePanel
