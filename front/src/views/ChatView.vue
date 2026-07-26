@@ -17,6 +17,7 @@ const {
   send,
   loadSession,
   newSession,
+  deleteSession,
 } = useChat()
 
 const historyLoading = ref(false)
@@ -57,6 +58,7 @@ function onNewSession() {
       :loading="historyLoading"
       @select-session="onSelectSession"
       @new-session="onNewSession"
+      @delete-session="deleteSession"
     />
   </div>
 </template>

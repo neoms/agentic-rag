@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { History, MessageSquare, Plus, Clock, Loader2 } from 'lucide-vue-next'
+import { ref } from 'vue'
+import { History, MessageSquare, Plus, Clock, Loader2, Trash2 } from 'lucide-vue-next'
 import type { SessionSummary } from '../../composables/useChat'
 
 defineProps<{
@@ -11,7 +12,25 @@ defineProps<{
 const emit = defineEmits<{
   'select-session': [sessionId: string]
   'new-session': []
+  'delete-session': [sessionId: string]
 }>()
+
+const confirmDeleteId = ref<string | null>(null)
+
+function requestDelete(id: string, e: Event) {
+  e.stopPropagation()
+  confirmDeleteId.value = id
+}
+
+function confirmDelete(id: string) {
+  emit('delete-session', id)
+  confirmDeleteId.value = null
+}
+
+function cancelDelete(e: Event) {
+  e.stopPropagation()
+  confirmDeleteId.value = null
+}
 
 function formatTime(ts: number): string {
   const now = Date.now()
@@ -54,7 +73,7 @@ function formatTime(ts: number): string {
           v-for="session in sessions"
           :key="session.session_id"
           @click="emit('select-session', session.session_id)"
-          class="p-2.5 rounded-lg cursor-pointer transition-colors"
+          class="p-2.5 rounded-lg cursor-pointer transition-colors group"
           :class="[
             activeSessionId === session.session_id
               ? 'bg-primary-500/10 border border-primary-500/20'
@@ -83,6 +102,34 @@ function formatTime(ts: number): string {
                 </span>
               </div>
             </div>
+
+            <!-- 删除按钮 -->
+            <template v-if="confirmDeleteId === session.session_id">
+              <div class="flex items-center gap-1 flex-shrink-0" @click.stop>
+                <button
+                  @click="confirmDelete(session.session_id)"
+                  class="p-0.5 rounded text-[10px] text-red-400 hover:bg-red-400/10 transition-colors"
+                  title="确认删除"
+                >
+                  确认
+                </button>
+                <button
+                  @click="cancelDelete"
+                  class="p-0.5 rounded text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+                  title="取消"
+                >
+                  取消
+                </button>
+              </div>
+            </template>
+            <button
+              v-else
+              @click="requestDelete(session.session_id, $event)"
+              class="p-0.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-400/10 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+              title="删除会话"
+            >
+              <Trash2 class="w-3 h-3" />
+            </button>
           </div>
         </div>
       </template>

@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import type { UIMessage, SourceDocument } from '../types'
 import { streamChat, getChatHistory } from '../api/chat'
 
@@ -9,14 +9,64 @@ export interface SessionSummary {
   updated_at: number
 }
 
-export function useChat() {
-  const messages = ref<UIMessage[]>([])
-  const sending = ref(false)
-  const sessionId = ref(generateSessionId())
-  const error = ref<string | null>(null)
+const LS_KEY_SESSIONS = 'agentic-rag-sessions'
+const LS_KEY_MESSAGES_PREFIX = 'agentic-rag-msgs-'
+const LS_KEY_LAST_SESSION = 'agentic-rag-last-sid'
+const LS_KEY_HALLUCINATION = 'agentic-rag-hallucination'
 
-  // 会话列表（本地维护）
-  const sessions = ref<SessionSummary[]>([])
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function saveJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {}
+}
+
+function loadSessionIds(): string[] {
+  return loadJson<string[]>(LS_KEY_SESSIONS, [])
+}
+
+function saveSessionIds(ids: string[]): void {
+  saveJson(LS_KEY_SESSIONS, ids)
+}
+
+function loadMessages(sid: string): UIMessage[] {
+  return loadJson<UIMessage[]>(`${LS_KEY_MESSAGES_PREFIX}${sid}`, [])
+}
+
+function saveMessages(sid: string, msgs: UIMessage[]): void {
+  saveJson(`${LS_KEY_MESSAGES_PREFIX}${sid}`, msgs)
+}
+
+function removeMessages(sid: string): void {
+  try { localStorage.removeItem(`${LS_KEY_MESSAGES_PREFIX}${sid}`) } catch {}
+}
+
+export function useChat() {
+  // —— 初始化 ——
+  const savedSessionIds = loadSessionIds()
+  const lastSid = localStorage.getItem(LS_KEY_LAST_SESSION)
+
+  // 恢复上次活跃会话（如果 session 列表中还存在）
+  const initSid = (lastSid && savedSessionIds.includes(lastSid))
+    ? lastSid
+    : generateSessionId()
+
+  const initMessages = loadMessages(initSid)
+  const initSessions = buildSessionSummaries(savedSessionIds)
+
+  const messages = ref<UIMessage[]>(initMessages)
+  const sending = ref(false)
+  const sessionId = ref(initSid)
+  const error = ref<string | null>(null)
+  const sessions = ref<SessionSummary[]>(initSessions)
 
   // Agent 选项
   const enableWebSearch = ref(false)
@@ -29,10 +79,61 @@ export function useChat() {
   const isStreaming = ref(false)
 
   // 幻觉检测结果 — 独立 ref，key 为消息 ID
-  const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>({})
+  const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>(
+    loadJson<Record<string, { passed: boolean; faithfulness: number }>>(LS_KEY_HALLUCINATION, {}),
+  )
+
+  // —— localStorage 同步 ——
+  // 消息变化 → 持久化
+  watch(messages, (val) => {
+    saveMessages(sessionId.value, val)
+    syncSessionIds()
+  }, { deep: true })
+
+  // sessionId 变化 → 持久化
+  watch(sessionId, (val) => {
+    if (val) localStorage.setItem(LS_KEY_LAST_SESSION, val)
+  })
+
+  // sessions 变化 → 持久化 id 列表
+  watch(sessions, (val) => {
+    const ids = val.map(s => s.session_id)
+    saveSessionIds(ids)
+  }, { deep: true })
+
+  // 幻觉结果变化 → 持久化
+  watch(hallucinationResults, (val) => {
+    saveJson(LS_KEY_HALLUCINATION, val)
+  }, { deep: true })
+
+  // —— 辅助函数 ——
 
   function generateSessionId(): string {
     return crypto.randomUUID().slice(0, 8)
+  }
+
+  function buildSessionSummaries(ids: string[]): SessionSummary[] {
+    return ids.map(sid => {
+      const msgs = loadMessages(sid)
+      const userMsgs = msgs.filter(m => m.role === 'user')
+      const preview = userMsgs.length > 0
+        ? userMsgs[userMsgs.length - 1].content.slice(0, 40) + (userMsgs[userMsgs.length - 1].content.length > 40 ? '...' : '')
+        : '空会话'
+      return {
+        session_id: sid,
+        preview,
+        message_count: msgs.length,
+        updated_at: msgs.length > 0 ? (msgs[msgs.length - 1].timestamp || 0) : 0,
+      }
+    }).sort((a, b) => b.updated_at - a.updated_at)
+  }
+
+  function syncSessionIds() {
+    const currentIds = loadSessionIds()
+    if (!currentIds.includes(sessionId.value)) {
+      currentIds.push(sessionId.value)
+      saveSessionIds(currentIds)
+    }
   }
 
   function addMessage(msg: UIMessage) {
@@ -66,8 +167,17 @@ export function useChat() {
 
     error.value = null
     sessionId.value = id
-    messages.value = []
 
+    // 先从 localStorage 恢复（瞬时），再从后端刷新（保证最新）
+    const cached = loadMessages(id)
+    if (cached.length > 0) {
+      messages.value = cached
+      updateSessionPreview()
+      return
+    }
+
+    // 本地没有缓存，从后端拉取
+    messages.value = []
     try {
       const result = await getChatHistory(id)
       if (result && result.messages.length > 0) {
@@ -85,12 +195,30 @@ export function useChat() {
   }
 
   function newSession() {
-    sessionId.value = generateSessionId()
+    const sid = generateSessionId()
+    sessionId.value = sid
     messages.value = []
     error.value = null
     streamingContent.value = ''
     streamSources.value = []
     streamAgentPath.value = []
+    // 确保新 session 也初始化一份空的 localStorage 条目
+    saveMessages(sid, [])
+  }
+
+  function deleteSession(id: string) {
+    // 从内存中移除
+    sessions.value = sessions.value.filter(s => s.session_id !== id)
+    removeMessages(id)
+
+    // 如果删除的是当前会话，切换到最新会话或新建
+    if (sessionId.value === id) {
+      if (sessions.value.length > 0) {
+        loadSession(sessions.value[0].session_id)
+      } else {
+        newSession()
+      }
+    }
   }
 
   async function send(query: string) {
@@ -242,5 +370,6 @@ export function useChat() {
     send,
     loadSession,
     newSession,
+    deleteSession,
   }
 }
