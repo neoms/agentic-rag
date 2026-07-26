@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { Bot } from 'lucide-vue-next'
-import type { UIMessage, ChatMode } from '../../types'
+import type { UIMessage } from '../../types'
 import MessageBubble from './MessageBubble.vue'
 import ChatInput from './ChatInput.vue'
 import SourcePanel from './SourcePanel.vue'
@@ -10,7 +10,6 @@ import AgentPathBadge from './AgentPathBadge.vue'
 const props = defineProps<{
   messages: UIMessage[]
   sending: boolean
-  mode: ChatMode
   error: string | null
   enableWebSearch: boolean
   enableReflection: boolean
@@ -19,7 +18,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   send: [query: string]
-  'update:mode': [mode: ChatMode]
   'update:enableWebSearch': [val: boolean]
   'update:enableReflection': [val: boolean]
 }>()
@@ -116,12 +114,10 @@ function handleSend(query: string) {
 
     <!-- 输入区 -->
     <ChatInput
-      :mode="mode"
       :sending="sending"
       :enableWebSearch="enableWebSearch"
       :enableReflection="enableReflection"
       @send="handleSend"
-      @update:mode="(m) => emit('update:mode', m)"
       @update:enableWebSearch="(v) => emit('update:enableWebSearch', v)"
       @update:enableReflection="(v) => emit('update:enableReflection', v)"
     />

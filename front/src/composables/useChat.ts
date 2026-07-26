@@ -1,6 +1,6 @@
 import { ref } from 'vue'
-import type { UIMessage, ChatMode, SourceDocument, AgenticChatResponse } from '../types'
-import { simpleChat, agenticChat, streamChat, getChatHistory } from '../api/chat'
+import type { UIMessage, SourceDocument } from '../types'
+import { streamChat, getChatHistory } from '../api/chat'
 
 export interface SessionSummary {
   session_id: string
@@ -13,13 +13,12 @@ export function useChat() {
   const messages = ref<UIMessage[]>([])
   const sending = ref(false)
   const sessionId = ref(generateSessionId())
-  const mode = ref<ChatMode>('simple')
   const error = ref<string | null>(null)
 
   // 会话列表（本地维护）
   const sessions = ref<SessionSummary[]>([])
 
-  // Agent 模式选项
+  // Agent 选项
   const enableWebSearch = ref(false)
   const enableReflection = ref(true)
 
@@ -48,7 +47,6 @@ export function useChat() {
       existing.preview = preview
       existing.message_count = messages.value.length
       existing.updated_at = Date.now()
-      // 重新排序：最新在前
       sessions.value.sort((a, b) => b.updated_at - a.updated_at)
     } else if (messages.value.length > 0) {
       sessions.value.unshift({
@@ -105,57 +103,6 @@ export function useChat() {
     }
     addMessage(userMsg)
 
-    if (mode.value === 'stream') {
-      await sendStream(query)
-    } else {
-      await sendNormal(query)
-    }
-
-    updateSessionPreview()
-  }
-
-  async function sendNormal(query: string) {
-    sending.value = true
-
-    try {
-      let response
-      if (mode.value === 'simple') {
-        response = await simpleChat({
-          query,
-          session_id: sessionId.value,
-        })
-      } else {
-        response = await agenticChat({
-          query,
-          session_id: sessionId.value,
-          enable_web_search: enableWebSearch.value,
-          enable_reflection: enableReflection.value,
-        })
-      }
-
-      if (response) {
-        const agenticResponse = response as AgenticChatResponse
-        const assistantMsg: UIMessage = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: response.answer,
-          timestamp: Date.now(),
-          sources: response.sources,
-          reflection_count: response.reflection_count,
-          agent_path: 'agent_path' in response ? agenticResponse.agent_path : undefined,
-          tool_calls: 'tool_calls' in response ? agenticResponse.tool_calls : undefined,
-        }
-        addMessage(assistantMsg)
-        sessionId.value = response.session_id
-      }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : '对话请求失败'
-    } finally {
-      sending.value = false
-    }
-  }
-
-  async function sendStream(query: string) {
     sending.value = true
     isStreaming.value = true
     streamingContent.value = ''
@@ -172,7 +119,7 @@ export function useChat() {
     addMessage(assistantMsg)
     const msgIndex = messages.value.length - 1
 
-    // 等待浏览器渲染空消息气泡 + 光标，确保流式效果从初始状态开始可见
+    // 等待浏览器渲染空消息气泡 + 光标
     await new Promise(r => requestAnimationFrame(r))
 
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
@@ -197,9 +144,7 @@ export function useChat() {
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        // 统一换行符：sse_starlette 使用 \r\n，标准化为 \n
         buffer = buffer.replace(/\r\n/g, '\n')
-        // SSE 事件以 \n\n 分隔，不完整的部分留在 buffer 等待下一 chunk
         const events = buffer.split('\n\n')
         buffer = events.pop() || ''
 
@@ -251,8 +196,6 @@ export function useChat() {
               break
           }
 
-          // 用 macrotask 让渡控制权，使浏览器能在事件之间重绘，产生逐字流式效果
-          // nextTick（微任务）不够，因为微任务不会触发浏览器 repaint
           await new Promise(r => setTimeout(r, 0))
         }
       }
@@ -266,13 +209,14 @@ export function useChat() {
       isStreaming.value = false
       sending.value = false
     }
+
+    updateSessionPreview()
   }
 
   return {
     messages,
     sending,
     sessionId,
-    mode,
     error,
     sessions,
     enableWebSearch,

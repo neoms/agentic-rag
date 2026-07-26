@@ -87,8 +87,6 @@ export interface DocumentDeleteResponse {
 }
 
 // ===== 对话 UI 模型 =====
-export type ChatMode = 'simple' | 'agentic' | 'stream'
-
 export interface UIMessage {
   id: string
   role: 'user' | 'assistant'

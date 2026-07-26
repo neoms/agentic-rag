@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Send, Loader2, Globe, Brain, Zap } from 'lucide-vue-next'
-import type { ChatMode } from '../../types'
+import { ref } from 'vue'
+import { Send, Loader2, Globe, Brain } from 'lucide-vue-next'
 
 const props = defineProps<{
-  mode: ChatMode
   sending: boolean
   enableWebSearch?: boolean
   enableReflection?: boolean
@@ -12,7 +10,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   send: [query: string]
-  'update:mode': [mode: ChatMode]
   'update:enableWebSearch': [val: boolean]
   'update:enableReflection': [val: boolean]
 }>()
@@ -22,8 +19,6 @@ const webSearchBtn = ref<HTMLElement | null>(null)
 const showWebSearchTip = ref(false)
 const tipStyle = ref<Record<string, string>>({})
 let webSearchTipTimer: ReturnType<typeof setTimeout> | null = null
-
-const isAgentMode = computed(() => props.mode === 'agentic' || props.mode === 'stream')
 
 function updateTipPosition() {
   if (!webSearchBtn.value) return
@@ -59,21 +54,12 @@ function handleKeydown(e: KeyboardEvent) {
     handleSend()
   }
 }
-
-const modeOptions: { value: ChatMode; label: string; desc: string }[] = [
-  { value: 'simple', label: '基础', desc: '检索 + 生成' },
-  { value: 'agentic', label: 'Agent', desc: '自反思 + 工具调用' },
-  { value: 'stream', label: '流式', desc: 'Agent + 实时输出' },
-]
 </script>
 
 <template>
   <div class="border-t border-slate-700/50 bg-slate-900/60 backdrop-blur-lg">
     <!-- Agent 选项 -->
-    <div
-      v-if="isAgentMode"
-      class="flex items-center gap-3 px-4 pt-3 pb-1"
-    >
+    <div class="flex items-center gap-3 px-4 pt-3 pb-1">
       <button
         ref="webSearchBtn"
         @click="handleWebSearchToggle"
@@ -106,25 +92,6 @@ const modeOptions: { value: ChatMode; label: string; desc: string }[] = [
 
     <!-- 输入区 -->
     <div class="flex items-end gap-3 px-4 py-3">
-      <!-- 模式切换 -->
-      <div class="flex items-center bg-slate-800 rounded-lg p-0.5 gap-0.5">
-        <button
-          v-for="opt in modeOptions"
-          :key="opt.value"
-          @click="emit('update:mode', opt.value)"
-          :class="[
-            'px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 flex items-center gap-1.5',
-            mode === opt.value
-              ? 'bg-primary-500/20 text-primary-400 shadow-sm'
-              : 'text-slate-500 hover:text-slate-400'
-          ]"
-          :title="opt.desc"
-        >
-          <Zap v-if="opt.value === 'stream'" class="w-3 h-3" />
-          <span>{{ opt.label }}</span>
-        </button>
-      </div>
-
       <!-- 输入框 -->
       <div class="flex-1 relative">
         <textarea

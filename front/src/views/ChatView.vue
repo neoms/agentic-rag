@@ -8,7 +8,6 @@ const {
   messages,
   sending,
   sessionId,
-  mode,
   error,
   sessions,
   enableWebSearch,
@@ -39,13 +38,11 @@ function onNewSession() {
       <ChatPanel
         :messages="messages"
         :sending="sending"
-        :mode="mode"
         :error="error"
         :enableWebSearch="enableWebSearch"
         :enableReflection="enableReflection"
         :isStreaming="isStreaming"
         @send="send"
-        @update:mode="mode = $event"
         @update:enableWebSearch="enableWebSearch = $event"
         @update:enableReflection="enableReflection = $event"
       />
