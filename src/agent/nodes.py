@@ -73,7 +73,7 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
 
     使用百炼 TextReRank 模型对文档列表按 query 相关性重新排序，
     保留 top_k 个最相关的文档，提升后续生成质量。
-    当 rerank_enabled=False 或数据不足时直接透传。
+    当 enable_rerank=False 或 rerank_enabled=False 或数据不足时直接透传。
     """
     documents = state.get("documents", [])
     query = state["query"]
@@ -82,8 +82,12 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
         logger.info("重排序节点: 无文档，跳过")
         return {"agent_path": ["rerank (no docs)"]}
 
+    if not state.get("enable_rerank", True):
+        logger.info("重排序节点: 用户关闭，透传 %d 个文档", len(documents))
+        return {"agent_path": ["rerank (off)"]}
+
     if not settings.rerank_enabled:
-        logger.info("重排序节点: 已禁用，透传 %d 个文档", len(documents))
+        logger.info("重排序节点: 全局禁用，透传 %d 个文档", len(documents))
         return {"agent_path": ["rerank (disabled)"]}
 
     reranked = rerank_documents(query, documents, top_k=settings.rerank_top_k)
@@ -98,6 +102,13 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
     """文档评估节点：判断检索结果是否与问题相关"""
     documents = state.get("documents", [])
     query = state["query"]
+
+    if not state.get("enable_grade_documents", True):
+        logger.info("评估节点: 用户关闭，跳过评估，假定文档相关")
+        return {
+            "documents_relevant": True,
+            "agent_path": ["grade_documents (off)"],
+        }
 
     if not documents:
         logger.info("评估节点: 无检索结果")

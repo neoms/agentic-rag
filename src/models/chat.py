@@ -14,6 +14,9 @@ class AgenticChatRequest(ChatRequest):
     """Agent 模式对话请求（含自反思、工具调用）"""
     enable_web_search: bool = False
     enable_reflection: bool = True
+    enable_rerank: bool = True
+    enable_grade_documents: bool = True
+    enable_transform_query: bool = True
     stream: bool = False
 
 

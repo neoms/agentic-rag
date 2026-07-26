@@ -54,3 +54,8 @@ class AgentState(TypedDict):
 
     # 是否启用联网搜索
     enable_web_search: bool
+
+    # 可控节点开关
+    enable_rerank: bool
+    enable_grade_documents: bool
+    enable_transform_query: bool

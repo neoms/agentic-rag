@@ -37,15 +37,16 @@ def should_continue_after_grade(state: AgentState) -> Literal["generate", "trans
 
     - 文档相关 → 进入答案生成
     - 文档不相关 + 开启联网搜索 → 联网搜索（降级方案）
-    - 文档不相关 + 未超过重试次数 → 查询重写
-    - 文档不相关 + 超过重试次数 → 进入生成（降级处理）
+    - 文档不相关 + 开启查询重写 + 未超过重试次数 → 查询重写
+    - 其他情况 → 进入生成（降级处理）
     """
     enable_web = state.get("enable_web_search", False)
-    logger.info("路由决策: documents_relevant=%s, enable_web_search=%s",
-                state.get("documents_relevant", False), enable_web)
+    enable_transform = state.get("enable_transform_query", True)
+    logger.info("路由决策: documents_relevant=%s, web_search=%s, transform_query=%s",
+                state.get("documents_relevant", False), enable_web, enable_transform)
 
     if state.get("documents_relevant", False):
-        logger.info("路由: 文档相关 → generate (跳过联网搜索)")
+        logger.info("路由: 文档相关 → generate")
         return "generate"
 
     # 向量库无相关文档且开启了联网搜索 → 走联网搜索降级
@@ -56,12 +57,12 @@ def should_continue_after_grade(state: AgentState) -> Literal["generate", "trans
     iteration = state.get("iteration_count", 0)
     max_iter = state.get("max_iterations", 3)
 
-    if iteration < max_iter:
+    if enable_transform and iteration < max_iter:
         logger.info("路由: 文档不相关 → transform_query (第 %d/%d 次)", iteration + 1, max_iter)
         return "transform_query"
-    else:
-        logger.info("路由: 超过重试次数 → generate (降级)")
-        return "generate"
+
+    logger.info("路由: transform_query 已关闭或超过重试次数 → generate (降级)")
+    return "generate"
 
 
 def should_continue_after_hallucination(

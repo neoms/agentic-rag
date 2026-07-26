@@ -117,6 +117,9 @@ class RAGService:
             "stream": request.stream,
             "tool_calls": [],
             "enable_web_search": request.enable_web_search,
+            "enable_rerank": request.enable_rerank,
+            "enable_grade_documents": request.enable_grade_documents,
+            "enable_transform_query": request.enable_transform_query,
         }
 
         # 运行 Agent 图
@@ -178,6 +181,9 @@ class RAGService:
             "stream": True,
             "tool_calls": [],
             "enable_web_search": request.enable_web_search,
+            "enable_rerank": request.enable_rerank,
+            "enable_grade_documents": request.enable_grade_documents,
+            "enable_transform_query": request.enable_transform_query,
         }
 
         # 先跑状态图获取检索结果和 Agent 路径

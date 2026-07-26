@@ -1,17 +1,23 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Send, Loader2, Globe, Brain } from 'lucide-vue-next'
+import { Send, Loader2, Globe, Brain, ListOrdered, Sparkles, Shuffle } from 'lucide-vue-next'
 
 const props = defineProps<{
   sending: boolean
   enableWebSearch?: boolean
   enableReflection?: boolean
+  enableRerank?: boolean
+  enableGradeDocuments?: boolean
+  enableTransformQuery?: boolean
 }>()
 
 const emit = defineEmits<{
   send: [query: string]
   'update:enableWebSearch': [val: boolean]
   'update:enableReflection': [val: boolean]
+  'update:enableRerank': [val: boolean]
+  'update:enableGradeDocuments': [val: boolean]
+  'update:enableTransformQuery': [val: boolean]
 }>()
 
 const query = ref('')
@@ -58,13 +64,13 @@ function handleKeydown(e: KeyboardEvent) {
 
 <template>
   <div class="border-t border-slate-700/50 bg-slate-900/60 backdrop-blur-lg">
-    <!-- Agent 选项 -->
-    <div class="flex items-center gap-3 px-4 pt-3 pb-1">
+    <!-- Agent 选项第一行 -->
+    <div class="flex items-center gap-2 px-4 pt-3 pb-0.5 flex-wrap">
       <button
         ref="webSearchBtn"
         @click="handleWebSearchToggle"
         :class="[
-          'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-all duration-200 border',
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableWebSearch
             ? 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20'
             : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
@@ -76,7 +82,7 @@ function handleKeydown(e: KeyboardEvent) {
       <button
         @click="emit('update:enableReflection', !enableReflection)"
         :class="[
-          'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-all duration-200 border',
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableReflection
             ? 'bg-blue-400/10 text-blue-400 border-blue-400/20'
             : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
@@ -84,6 +90,42 @@ function handleKeydown(e: KeyboardEvent) {
       >
         <Brain class="w-3 h-3" />
         自反思
+      </button>
+      <button
+        @click="emit('update:enableRerank', !enableRerank)"
+        :class="[
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
+          enableRerank
+            ? 'bg-amber-400/10 text-amber-400 border-amber-400/20'
+            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
+        ]"
+      >
+        <ListOrdered class="w-3 h-3" />
+        重排序
+      </button>
+      <button
+        @click="emit('update:enableGradeDocuments', !enableGradeDocuments)"
+        :class="[
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
+          enableGradeDocuments
+            ? 'bg-violet-400/10 text-violet-400 border-violet-400/20'
+            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
+        ]"
+      >
+        <Sparkles class="w-3 h-3" />
+        文档评估
+      </button>
+      <button
+        @click="emit('update:enableTransformQuery', !enableTransformQuery)"
+        :class="[
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
+          enableTransformQuery
+            ? 'bg-rose-400/10 text-rose-400 border-rose-400/20'
+            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
+        ]"
+      >
+        <Shuffle class="w-3 h-3" />
+        查询重写
       </button>
       <span class="text-[10px] text-slate-600 ml-auto">
         Shift+Enter 换行

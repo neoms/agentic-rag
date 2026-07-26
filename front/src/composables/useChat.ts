@@ -71,6 +71,9 @@ export function useChat() {
   // Agent 选项
   const enableWebSearch = ref(false)
   const enableReflection = ref(true)
+  const enableRerank = ref(true)
+  const enableGradeDocuments = ref(true)
+  const enableTransformQuery = ref(true)
 
   // 流式状态
   const streamingContent = ref('')
@@ -262,6 +265,9 @@ export function useChat() {
         session_id: sessionId.value,
         enable_web_search: enableWebSearch.value,
         enable_reflection: enableReflection.value,
+        enable_rerank: enableRerank.value,
+        enable_grade_documents: enableGradeDocuments.value,
+        enable_transform_query: enableTransformQuery.value,
         stream: true,
       })
 
@@ -362,6 +368,9 @@ export function useChat() {
     sessions,
     enableWebSearch,
     enableReflection,
+    enableRerank,
+    enableGradeDocuments,
+    enableTransformQuery,
     streamingContent,
     streamSources,
     streamAgentPath,
