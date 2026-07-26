@@ -80,18 +80,6 @@ function handleKeydown(e: KeyboardEvent) {
         联网搜索
       </button>
       <button
-        @click="emit('update:enableReflection', !enableReflection)"
-        :class="[
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
-          enableReflection
-            ? 'bg-blue-400/10 text-blue-400 border-blue-400/20'
-            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
-        ]"
-      >
-        <Brain class="w-3 h-3" />
-        自反思
-      </button>
-      <button
         @click="emit('update:enableRerank', !enableRerank)"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
@@ -126,6 +114,18 @@ function handleKeydown(e: KeyboardEvent) {
       >
         <Shuffle class="w-3 h-3" />
         查询重写
+      </button>
+      <button
+        @click="emit('update:enableReflection', !enableReflection)"
+        :class="[
+          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
+          enableReflection
+            ? 'bg-blue-400/10 text-blue-400 border-blue-400/20'
+            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
+        ]"
+      >
+        <Brain class="w-3 h-3" />
+        自反思
       </button>
       <span class="text-[10px] text-slate-600 ml-auto">
         Shift+Enter 换行
