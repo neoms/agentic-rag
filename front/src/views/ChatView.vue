@@ -10,11 +10,6 @@ const {
   sessionId,
   error,
   sessions,
-  enableWebSearch,
-  enableReflection,
-  enableRerank,
-  enableGradeDocuments,
-  enableTransformQuery,
   isStreaming,
   hallucinationResults,
   send,
@@ -44,19 +39,9 @@ function onNewSession() {
         :messages="messages"
         :sending="sending"
         :error="error"
-        :enableWebSearch="enableWebSearch"
-        :enableReflection="enableReflection"
-        :enableRerank="enableRerank"
-        :enableGradeDocuments="enableGradeDocuments"
-        :enableTransformQuery="enableTransformQuery"
         :isStreaming="isStreaming"
         :hallucinationResults="hallucinationResults"
         @send="send"
-        @update:enableWebSearch="enableWebSearch.value = $event"
-        @update:enableReflection="enableReflection.value = $event"
-        @update:enableRerank="enableRerank.value = $event"
-        @update:enableGradeDocuments="enableGradeDocuments.value = $event"
-        @update:enableTransformQuery="enableTransformQuery.value = $event"
       />
     </div>
 

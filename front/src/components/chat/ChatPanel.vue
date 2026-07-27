@@ -11,22 +11,12 @@ const props = defineProps<{
   messages: UIMessage[]
   sending: boolean
   error: string | null
-  enableWebSearch: boolean
-  enableReflection: boolean
-  enableRerank: boolean
-  enableGradeDocuments: boolean
-  enableTransformQuery: boolean
   isStreaming: boolean
   hallucinationResults: Record<string, { passed: boolean; faithfulness: number }>
 }>()
 
 const emit = defineEmits<{
   send: [query: string]
-  'update:enableWebSearch': [val: boolean]
-  'update:enableReflection': [val: boolean]
-  'update:enableRerank': [val: boolean]
-  'update:enableGradeDocuments': [val: boolean]
-  'update:enableTransformQuery': [val: boolean]
 }>()
 
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -143,17 +133,7 @@ function handleSend(query: string) {
     <!-- 输入区 -->
     <ChatInput
       :sending="sending"
-      :enableWebSearch="enableWebSearch"
-      :enableReflection="enableReflection"
-      :enableRerank="enableRerank"
-      :enableGradeDocuments="enableGradeDocuments"
-      :enableTransformQuery="enableTransformQuery"
       @send="handleSend"
-      @update:enableWebSearch="(v) => emit('update:enableWebSearch', v)"
-      @update:enableReflection="(v) => emit('update:enableReflection', v)"
-      @update:enableRerank="(v) => emit('update:enableRerank', v)"
-      @update:enableGradeDocuments="(v) => emit('update:enableGradeDocuments', v)"
-      @update:enableTransformQuery="(v) => emit('update:enableTransformQuery', v)"
     />
   </div>
 </template>

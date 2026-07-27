@@ -1,23 +1,20 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Send, Loader2, Globe, Brain, ListOrdered, Sparkles, Shuffle } from 'lucide-vue-next'
+import {
+  enableWebSearch,
+  enableReflection,
+  enableRerank,
+  enableGradeDocuments,
+  enableTransformQuery,
+} from '../../composables/agentFlowState'
 
 const props = defineProps<{
   sending: boolean
-  enableWebSearch?: boolean
-  enableReflection?: boolean
-  enableRerank?: boolean
-  enableGradeDocuments?: boolean
-  enableTransformQuery?: boolean
 }>()
 
 const emit = defineEmits<{
   send: [query: string]
-  'update:enableWebSearch': [val: boolean]
-  'update:enableReflection': [val: boolean]
-  'update:enableRerank': [val: boolean]
-  'update:enableGradeDocuments': [val: boolean]
-  'update:enableTransformQuery': [val: boolean]
 }>()
 
 const query = ref('')
@@ -36,9 +33,8 @@ function updateTipPosition() {
 }
 
 function handleWebSearchToggle() {
-  const nextVal = !props.enableWebSearch
-  emit('update:enableWebSearch', nextVal)
-  if (nextVal) {
+  enableWebSearch.value = !enableWebSearch.value
+  if (enableWebSearch.value) {
     updateTipPosition()
     showWebSearchTip.value = true
     if (webSearchTipTimer) clearTimeout(webSearchTipTimer)
@@ -80,7 +76,7 @@ function handleKeydown(e: KeyboardEvent) {
         联网搜索
       </button>
       <button
-        @click="emit('update:enableRerank', !enableRerank)"
+        @click="enableRerank = !enableRerank"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableRerank
@@ -92,7 +88,7 @@ function handleKeydown(e: KeyboardEvent) {
         重排序
       </button>
       <button
-        @click="emit('update:enableGradeDocuments', !enableGradeDocuments)"
+        @click="enableGradeDocuments = !enableGradeDocuments"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableGradeDocuments
@@ -104,7 +100,7 @@ function handleKeydown(e: KeyboardEvent) {
         文档评估
       </button>
       <button
-        @click="emit('update:enableTransformQuery', !enableTransformQuery)"
+        @click="enableTransformQuery = !enableTransformQuery"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableTransformQuery
@@ -116,7 +112,7 @@ function handleKeydown(e: KeyboardEvent) {
         查询重写
       </button>
       <button
-        @click="emit('update:enableReflection', !enableReflection)"
+        @click="enableReflection = !enableReflection"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
           enableReflection

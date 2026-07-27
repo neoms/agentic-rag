@@ -69,7 +69,7 @@ export function useChat() {
   const error = ref<string | null>(null)
   const sessions = ref<SessionSummary[]>(initSessions)
 
-  // Agent 选项（共享状态，Sidebar 中流程图也会读取）
+  // Agent 选项：直接使用共享 flow 状态，ChatInput 也是同一份引用
   const enableWebSearch = flow.enableWebSearch
   const enableReflection = flow.enableReflection
   const enableRerank = flow.enableRerank
@@ -386,11 +386,6 @@ export function useChat() {
     sessionId,
     error,
     sessions,
-    enableWebSearch,
-    enableReflection,
-    enableRerank,
-    enableGradeDocuments,
-    enableTransformQuery,
     streamingContent,
     streamSources,
     streamAgentPath,
