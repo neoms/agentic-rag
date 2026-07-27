@@ -10,22 +10,26 @@ const navItems = [
 ]
 
 // ── SVG 节点布局 ──
-// 主流程: retrieve → [三路并行] bm25/hyde/multi_query → rerank → grade → generate → check_hallucination
-// 左分支: transform_query (不相关时, 循环回 retrieve)
-// 右分支: web_search      (不相关+联网时, 进入 generate)
-// viewBox 0 0 220 380
+// START → 4 路并行检索 → merge → [可选节点带 bypass] → END
+// viewBox 0 0 320 470
 interface N { id: string; label: string; x: number; y: number; w: number; h: number }
 const NODES: N[] = [
-  { id: 'retrieve',             label: '检索(语义)', x: 55, y: 5,   w: 110, h: 22 },
-  { id: 'bm25_retrieve',        label: 'BM25',       x: 5,  y: 38,  w: 62,  h: 22 },
-  { id: 'hyde_retrieve',        label: 'HyDE',       x: 79, y: 38,  w: 62,  h: 22 },
-  { id: 'multi_query_retrieve', label: '多角度查询',  x: 153,y: 38,  w: 62,  h: 22 },
-  { id: 'rerank_documents',     label: '重排序',     x: 55, y: 75,  w: 110, h: 22 },
-  { id: 'grade_documents',      label: '文档评估',   x: 55, y: 110, w: 110, h: 22 },
-  { id: 'transform_query',      label: '查询重写',   x: 5,  y: 165, w: 92,  h: 22 },
-  { id: 'web_search',           label: '联网搜索',   x: 123,y: 165, w: 92,  h: 22 },
-  { id: 'generate',             label: '生成回答',   x: 55, y: 235, w: 110, h: 22 },
-  { id: 'check_hallucination',  label: '幻觉检测',   x: 55, y: 305, w: 110, h: 22 },
+  // 并行检索行（同级同行）
+  { id: 'retrieve',             label: '语义检索',   x: 8,  y: 52, w: 60, h: 25 },
+  { id: 'bm25_retrieve',        label: 'BM25',       x: 86, y: 52, w: 60, h: 25 },
+  { id: 'hyde_retrieve',        label: 'HyDE',       x: 164,y: 52, w: 60, h: 25 },
+  { id: 'multi_query_retrieve', label: '多角度查询',  x: 242,y: 52, w: 60, h: 25 },
+  // 合并
+  { id: 'merge_retrieval',      label: '合并去重',   x: 125,y: 97, w: 60, h: 25 },
+  // 可选节点（主链，可被 bypass）
+  { id: 'rerank_documents',     label: '重排序',     x: 125,y: 142,w: 60, h: 25 },
+  { id: 'grade_documents',      label: '文档评估',   x: 125,y: 187,w: 60, h: 25 },
+  // 分支节点
+  { id: 'transform_query',      label: '查询重写',   x: 8,  y: 225,w: 60, h: 25 },
+  { id: 'web_search',           label: '联网搜索',   x: 222,y: 225,w: 60, h: 25 },
+  // 固定节点
+  { id: 'generate',             label: '生成回答',   x: 125,y: 262,w: 60, h: 25 },
+  { id: 'check_hallucination',  label: '幻觉检测',   x: 125,y: 312,w: 60, h: 25 },
 ]
 const byId = (id: string): N => NODES.find(n => n.id === id)!
 
@@ -59,10 +63,15 @@ const STROKE: Record<string, string> = {
 const TEXT: Record<string, string> = {
   active: '#93c5fd', done: '#6ee7b7', disabled: '#64748b', pending: '#94a3b8',
 }
+
+// ── Bypass 线条样式（节点禁用时路径线高亮，启用时几乎不可见） ──
+function bypassOpacity(id: string): number { return enabled(id) ? 0.10 : 0.55 }
+function bypassColor(id: string): string { return enabled(id) ? '#475569' : '#f59e0b' }
+function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
 </script>
 
 <template>
-  <aside class="w-56 flex-shrink-0 glass border-r border-slate-700/50 flex flex-col h-full">
+  <aside class="w-72 flex-shrink-0 glass border-r border-slate-700/50 flex flex-col h-full">
     <!-- Logo -->
     <div class="px-5 py-6 border-b border-slate-700/50">
       <div class="flex items-center gap-3">
@@ -95,7 +104,7 @@ const TEXT: Record<string, string> = {
         <span class="text-[10px] font-medium text-slate-500">Agent 流程</span>
       </div>
 
-      <svg viewBox="0 0 220 355" class="w-full" style="max-height: 355px">
+      <svg viewBox="0 0 320 470" class="w-full" style="max-height: 470px">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
@@ -115,58 +124,126 @@ const TEXT: Record<string, string> = {
           </filter>
         </defs>
 
-        <!-- ═══ 直线上箭头 (g=灰色) ═══ -->
+        <!-- ═══ START 节点 ═══ -->
+        <rect x="130" y="5" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+        <text x="160" y="17" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">START</text>
+
+        <!-- ═══ START → 四路检索（扇出） ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
-          <!-- retrieve → 三路分支 (斜线) -->
-          <line x1="90"  :y1="byId('retrieve').y+22" x2="36"  :y2="byId('bm25_retrieve').y"        marker-end="url(#arrCyan)"/>
-          <line x1="110" :y1="byId('retrieve').y+22" x2="110" :y2="byId('hyde_retrieve').y"        marker-end="url(#arrPink)"/>
-          <line x1="130" :y1="byId('retrieve').y+22" x2="184" :y2="byId('multi_query_retrieve').y" marker-end="url(#arrIndigo)"/>
-
-          <!-- 三路分支 → rerank (收敛) -->
-          <line x1="36"  :y1="byId('bm25_retrieve').y+22"        x2="80"  :y2="byId('rerank_documents').y"  marker-end="url(#arrCyan)"/>
-          <line x1="110" :y1="byId('hyde_retrieve').y+22"        x2="110" :y2="byId('rerank_documents').y"  marker-end="url(#arrPink)"/>
-          <line x1="184" :y1="byId('multi_query_retrieve').y+22" x2="140" :y2="byId('rerank_documents').y"  marker-end="url(#arrIndigo)"/>
-
-          <!-- 主流程: rerank → grade -->
-          <line x1="110" :y1="byId('rerank_documents').y+22" x2="110" :y2="byId('grade_documents').y"      marker-end="url(#arr)"/>
-
-          <!-- grade → generate (相关) -->
-          <line x1="110" :y1="byId('grade_documents').y+22"  x2="110" :y2="byId('generate').y"            marker-end="url(#arr)"/>
-          <!-- grade → web_search (不相关+联网)  斜线向右下 -->
-          <line x1="140" :y1="byId('grade_documents').y+22"  x2="170" :y2="byId('web_search').y+11"       marker-end="url(#arr)"/>
-          <!-- grade → transform_query (不相关) 斜线向左下 -->
-          <line x1="80"  :y1="byId('grade_documents').y+22"  x2="50"  :y2="byId('transform_query').y+11"  marker-end="url(#arr)"/>
-
-          <!-- web_search → generate -->
-          <line x1="170" :y1="byId('web_search').y+22"       x2="170" :y2="byId('generate').y+3"          marker-end="url(#arr)"/>
-
-          <!-- generate → check_hallucination (开自反思) -->
-          <line x1="110" :y1="byId('generate').y+22"         x2="110" :y2="byId('check_hallucination').y" marker-end="url(#arr)"/>
+          <line x1="160" y1="27" x2="160" y2="30"/>
+          <line x1="44" y1="30" x2="278" y2="30"/>
+          <line x1="44" y1="30" x2="44" :y2="byId('retrieve').y" marker-end="url(#arr)"/>
+          <line x1="122"y1="30" x2="122":y2="byId('bm25_retrieve').y" marker-end="url(#arrCyan)"/>
+          <line x1="200"y1="30" x2="200":y2="byId('hyde_retrieve').y" marker-end="url(#arrPink)"/>
+          <line x1="278"y1="30" x2="278":y2="byId('multi_query_retrieve').y" marker-end="url(#arrIndigo)"/>
         </g>
 
+        <!-- ═══ 四路检索 → merge 收敛 ═══ -->
+        <g stroke="#475569" stroke-width="1.5" fill="none">
+          <line :x1="byId('retrieve').x+byId('retrieve').w/2" :y1="byId('retrieve').y+25"
+                :x2="byId('merge_retrieval').x+18"             :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('bm25_retrieve').x+byId('bm25_retrieve').w/2" :y1="byId('bm25_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+28"                     :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('hyde_retrieve').x+byId('hyde_retrieve').w/2" :y1="byId('hyde_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+42"                     :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('multi_query_retrieve').x+byId('multi_query_retrieve').w/2" :y1="byId('multi_query_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+52"                                 :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+        </g>
+
+        <!-- ═══ 主链箭头 merge → rerank → grade → generate → check → END ═══ -->
+        <g stroke="#475569" stroke-width="1.5" fill="none">
+          <!-- merge → rerank -->
+          <line :x1="byId('merge_retrieval').x+byId('merge_retrieval').w/2" :y1="byId('merge_retrieval').y+25"
+                :x2="byId('rerank_documents').x+byId('rerank_documents').w/2" :y2="byId('rerank_documents').y"
+                marker-end="url(#arr)" :opacity="mainEdgeOpacity('rerank_documents')"/>
+          <!-- rerank → grade -->
+          <line :x1="byId('rerank_documents').x+byId('rerank_documents').w/2" :y1="byId('rerank_documents').y+25"
+                :x2="byId('grade_documents').x+byId('grade_documents').w/2" :y2="byId('grade_documents').y"
+                marker-end="url(#arr)" :opacity="mainEdgeOpacity('rerank_documents')"/>
+          <!-- grade → generate（相关） -->
+          <line :x1="byId('grade_documents').x+byId('grade_documents').w/2" :y1="byId('grade_documents').y+25"
+                :x2="byId('generate').x+byId('generate').w/2" :y2="byId('generate').y"
+                marker-end="url(#arr)" :opacity="mainEdgeOpacity('grade_documents')"/>
+          <!-- generate → check_hallucination -->
+          <line :x1="byId('generate').x+byId('generate').w/2" :y1="byId('generate').y+25"
+                :x2="byId('check_hallucination').x+byId('check_hallucination').w/2" :y2="byId('check_hallucination').y"
+                marker-end="url(#arr)"/>
+        </g>
+
+        <!-- ═══ Bypass 绕过线（可选节点右侧虚线弧线） ═══ -->
+        <path :d="`M ${byId('merge_retrieval').x+byId('merge_retrieval').w} ${byId('merge_retrieval').y+12} C ${byId('merge_retrieval').x+byId('merge_retrieval').w+20} ${byId('merge_retrieval').y+12}, ${byId('grade_documents').x+byId('grade_documents').w+20} ${byId('grade_documents').y+12}, ${byId('grade_documents').x+byId('grade_documents').w} ${byId('grade_documents').y+12}`"
+              fill="none" :stroke="bypassColor('rerank_documents')" stroke-width="1.2" stroke-dasharray="4 3"
+              :opacity="bypassOpacity('rerank_documents')" marker-end="url(#arr)"/>
+        <path :d="`M ${byId('rerank_documents').x+byId('rerank_documents').w} ${byId('rerank_documents').y+12} C ${byId('rerank_documents').x+byId('rerank_documents').w+20} ${byId('rerank_documents').y+12}, ${byId('generate').x+byId('generate').w+20} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w} ${byId('generate').y+12}`"
+              fill="none" :stroke="bypassColor('grade_documents')" stroke-width="1.2" stroke-dasharray="4 3"
+              :opacity="bypassOpacity('grade_documents')" marker-end="url(#arr)"/>
+        <path :d="`M ${byId('generate').x+byId('generate').w} ${byId('generate').y+12} C ${byId('generate').x+byId('generate').w+25} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w+25} 365, 185 387`"
+              fill="none" :stroke="bypassColor('check_hallucination')" stroke-width="1.2" stroke-dasharray="4 3"
+              :opacity="bypassOpacity('check_hallucination')" marker-end="url(#arr)"/>
+
+        <!-- ═══ Bypass 标签 ═══ -->
+        <text :x="byId('merge_retrieval').x+byId('merge_retrieval').w+4" :y="byId('merge_retrieval').y+25"
+              :opacity="bypassOpacity('rerank_documents')" :fill="bypassColor('rerank_documents')"
+              class="text-[9px]">绕过</text>
+        <text :x="byId('rerank_documents').x+byId('rerank_documents').w+4" :y="byId('rerank_documents').y+25"
+              :opacity="bypassOpacity('grade_documents')" :fill="bypassColor('grade_documents')"
+              class="text-[9px]">绕过</text>
+        <text :x="byId('generate').x+byId('generate').w+4" :y="byId('generate').y+25"
+              :opacity="bypassOpacity('check_hallucination')" :fill="bypassColor('check_hallucination')"
+              class="text-[9px]">绕过</text>
+
+        <!-- ═══ 分支：grade → web_search / transform_query ═══ -->
+        <g stroke="#475569" stroke-width="1.5" fill="none">
+          <line :x1="byId('grade_documents').x" :y1="byId('grade_documents').y+25"
+                :x2="byId('transform_query').x+byId('transform_query').w/2" :y2="byId('transform_query').y"
+                marker-end="url(#arr)"/>
+          <line :x1="byId('grade_documents').x+byId('grade_documents').w" :y1="byId('grade_documents').y+25"
+                :x2="byId('web_search').x+byId('web_search').w/2" :y2="byId('web_search').y"
+                marker-end="url(#arr)"/>
+        </g>
+
+        <!-- ═══ web_search → generate ═══ -->
+        <line :x1="byId('web_search').x+byId('web_search').w/2" :y1="byId('web_search').y+25"
+              :x2="byId('web_search').x+byId('web_search').w/2" :y2="byId('generate').y+3"
+              stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
         <!-- ═══ 回环曲线 ═══ -->
-        <!-- transform_query → retrieve (循环回检索) -->
-        <path d="M 50 187 C 50 205, -5 195, -5 135 C -5 65, 40 55, 55 55"
+        <!-- transform_query → retrieve（循环） -->
+        <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+25} C ${byId('transform_query').x} ${byId('transform_query').y+32}, -5 ${byId('transform_query').y+10}, -5 145 C -5 68, 8 64, 8 64`"
               fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr)"/>
-        <!-- check_hallucination → generate (检测失败重试) -->
-        <path d="M 170 316 C 195 316, 195 245, 170 245"
+        <!-- check_hallucination → generate（幻觉重试） -->
+        <path :d="`M ${byId('check_hallucination').x+byId('check_hallucination').w} ${byId('check_hallucination').y+12} C ${byId('check_hallucination').x+byId('check_hallucination').w+12} ${byId('check_hallucination').y+12}, ${byId('check_hallucination').x+byId('check_hallucination').w+12} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w} ${byId('generate').y+12}`"
               fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr)"/>
 
         <!-- ═══ 分支标签 ═══ -->
-        <text x="118" y="142" class="text-[7px] fill-green-500/70">相关</text>
-        <text x="145" y="145" class="text-[7px] fill-orange-400/70">不相关+联网</text>
-        <text x="52"  y="145" class="text-[7px] fill-orange-400/70">不相关</text>
-        <text x="130" y="281" class="text-[7px] fill-slate-500">开自反思</text>
-        <text x="178" y="281" class="text-[7px] fill-slate-500">关</text>
+        <text :x="byId('grade_documents').x+byId('grade_documents').w/2+2" :y="byId('grade_documents').y+25+14"
+              class="text-[9px] fill-green-500/70">相关</text>
+        <text :x="byId('web_search').x-30" :y="byId('web_search').y+12"
+              class="text-[9px] fill-orange-400/70">不相关+联网</text>
+        <text :x="byId('transform_query').x+byId('transform_query').w+4" :y="byId('transform_query').y+12"
+              class="text-[9px] fill-orange-400/70">不相关</text>
 
         <!-- ═══ 回环标签 ═══ -->
-        <text x="25" y="139" class="text-[7px] fill-amber-500/80" transform="rotate(-90 25 139)">回检索</text>
-        <text x="183" y="292" class="text-[7px] fill-red-400/80">失败重试</text>
+        <text x="22" y="172" class="text-[9px] fill-amber-500/80" transform="rotate(-90 22 172)">回检索</text>
+        <text :x="byId('check_hallucination').x+byId('check_hallucination').w+4" :y="byId('check_hallucination').y"
+              class="text-[9px] fill-red-400/80">重试</text>
+
+        <!-- ═══ END 节点 ═══ -->
+        <rect x="130" y="375" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+        <text x="160" y="387" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">END</text>
+
+        <!-- ═══ check → END ═══ -->
+        <g stroke="#475569" stroke-width="1.5" fill="none">
+          <line :x1="byId('check_hallucination').x+byId('check_hallucination').w/2" :y1="byId('check_hallucination').y+25"
+                x2="160" y2="375" marker-end="url(#arr)"/>
+          <text :x="byId('generate').x+byId('generate').w+4" :y="byId('generate').y+16"
+                class="text-[9px] fill-slate-500">关</text>
+        </g>
 
         <!-- ═══ 节点 ═══ -->
         <g v-for="n in NODES" :key="n.id">
           <rect
-            :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="6" ry="6"
+            :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="4" ry="4"
             :fill="FILL[state(n.id)]"
             :stroke="STROKE[state(n.id)]"
             :stroke-width="state(n.id) === 'active' ? 2 : 1"
@@ -178,10 +255,10 @@ const TEXT: Record<string, string> = {
             text-anchor="middle" dominant-baseline="central"
             :fill="TEXT[state(n.id)]"
             :style="state(n.id) === 'disabled' ? 'text-decoration: line-through' : ''"
-            class="text-[9px]"
+            class="text-[12px]"
           >{{ n.label }}</text>
           <text v-if="state(n.id) === 'done'"
-            :x="n.x + n.w - 7" :y="n.y + n.h/2"
+            :x="n.x + n.w - 6" :y="n.y + n.h/2"
             text-anchor="middle" dominant-baseline="central"
             class="text-[10px] fill-emerald-300"
           >✓</text>

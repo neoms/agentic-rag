@@ -126,6 +126,33 @@ def route_retrieval_strategies(
     return sends
 
 
+def route_after_merge(
+    state: AgentState,
+) -> Literal["rerank_documents", "grade_documents", "generate"]:
+    """merge_retrieval 后的条件路由：根据 rerank 和 grade 开关决定路径。
+
+    - rerank ON  → rerank_documents → (后续再根据 grade 开关决定)
+    - rerank OFF + grade ON → 直达 grade_documents
+    - 两者均 OFF → 直达 generate
+    """
+    if state.get("enable_rerank", True):
+        return "rerank_documents"
+    if state.get("enable_grade_documents", True):
+        return "grade_documents"
+    logger.info("路由: rerank 和 grade 均已关闭 → generate")
+    return "generate"
+
+
+def route_after_rerank(
+    state: AgentState,
+) -> Literal["grade_documents", "generate"]:
+    """rerank 后的条件路由：是否进行文档评估"""
+    if state.get("enable_grade_documents", True):
+        return "grade_documents"
+    logger.info("路由: grade 已关闭 → generate")
+    return "generate"
+
+
 def build_agent_graph() -> StateGraph:
     """构建 Agent 状态图
 
@@ -189,9 +216,26 @@ def build_agent_graph() -> StateGraph:
     workflow.add_edge("hyde_retrieve", "merge_retrieval")
     workflow.add_edge("multi_query_retrieve", "merge_retrieval")
 
-    # merge → rerank → grade
-    workflow.add_edge("merge_retrieval", "rerank_documents")
-    workflow.add_edge("rerank_documents", "grade_documents")
+    # merge 后的条件边：根据开关走 rerank / grade / generate
+    workflow.add_conditional_edges(
+        "merge_retrieval",
+        route_after_merge,
+        {
+            "rerank_documents": "rerank_documents",
+            "grade_documents": "grade_documents",
+            "generate": "generate",
+        },
+    )
+
+    # rerank 后的条件边：是否进行文档评估
+    workflow.add_conditional_edges(
+        "rerank_documents",
+        route_after_rerank,
+        {
+            "grade_documents": "grade_documents",
+            "generate": "generate",
+        },
+    )
 
     # 条件边：grade_documents → generate / web_search / transform_query
     workflow.add_conditional_edges(
