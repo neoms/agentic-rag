@@ -50,7 +50,7 @@ export interface ChatHistoryResponse {
 }
 
 // ===== SSE 流式事件 =====
-export type SSEEventType = 'source' | 'path' | 'token' | 'done' | 'error' | 'hallucination'
+export type SSEEventType = 'source' | 'path' | 'token' | 'done' | 'error' | 'hallucination' | 'node_start' | 'node_step'
 
 export interface SSEEvent {
   type: SSEEventType

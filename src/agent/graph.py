@@ -83,6 +83,18 @@ def should_continue_after_hallucination(
     return "end"
 
 
+def should_check_hallucination(state: AgentState) -> Literal["check_hallucination", "end"]:
+    """生成后路由：是否进行幻觉检测
+
+    - 启用自反思 → 进入幻觉检测
+    - 关闭自反思 → 直接结束
+    """
+    if state.get("enable_reflection", True):
+        return "check_hallucination"
+    logger.info("路由: 自反思已关闭，跳过幻觉检测 → END")
+    return "end"
+
+
 def build_agent_graph() -> StateGraph:
     """构建 Agent 状态图
 
@@ -140,8 +152,15 @@ def build_agent_graph() -> StateGraph:
     # 边：transform_query → retrieve（重新检索循环）
     workflow.add_edge("transform_query", "retrieve")
 
-    # 边：generate → check_hallucination
-    workflow.add_edge("generate", "check_hallucination")
+    # 条件边：generate → check_hallucination（开启自反思）或 END（关闭）
+    workflow.add_conditional_edges(
+        "generate",
+        should_check_hallucination,
+        {
+            "check_hallucination": "check_hallucination",
+            "end": END,
+        },
+    )
 
     # 条件边：check_hallucination → generate（重试）或 END
     workflow.add_conditional_edges(

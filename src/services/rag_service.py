@@ -1,6 +1,7 @@
 """Agent/RAG 服务层 - 对话交互、Agent 编排的业务逻辑"""
 
 import time
+import asyncio
 import logging
 import json
 from typing import AsyncIterator
@@ -117,6 +118,7 @@ class RAGService:
             "stream": request.stream,
             "tool_calls": [],
             "enable_web_search": request.enable_web_search,
+            "enable_reflection": request.enable_reflection,
             "enable_rerank": request.enable_rerank,
             "enable_grade_documents": request.enable_grade_documents,
             "enable_transform_query": request.enable_transform_query,
@@ -181,15 +183,38 @@ class RAGService:
             "stream": True,
             "tool_calls": [],
             "enable_web_search": request.enable_web_search,
+            "enable_reflection": request.enable_reflection,
             "enable_rerank": request.enable_rerank,
             "enable_grade_documents": request.enable_grade_documents,
             "enable_transform_query": request.enable_transform_query,
         }
 
-        # 先跑状态图获取检索结果和 Agent 路径
+        # 使用 astream_events 获取节点的开始/完成事件（on_chain_start/on_chain_end）
+        # generate/check_hallucination 不在此处发送，由外部流式生成和幻觉检测阶段手动控制
         config = {"configurable": {"thread_id": request.session_id}}
-        logger.info("[stream_rag] 开始执行 Agent 状态图...")
-        result = agent_graph.invoke(initial_state, config)
+        GRAPH_NODES = {
+            "retrieve", "rerank_documents", "grade_documents",
+            "web_search", "transform_query", "tools",
+        }
+        logger.info("[stream_rag] 开始执行 Agent 状态图（逐步模式）...")
+        async for evt in agent_graph.astream_events(initial_state, config, version="v2"):
+            name = evt.get("name", "")
+            kind = evt.get("event", "")
+            if name not in GRAPH_NODES:
+                continue
+            if kind == "on_chain_start":
+                logger.info("[stream_rag] 节点开始: %s", name)
+                yield StreamEvent(event="node_start", data=name)
+            elif kind == "on_chain_end":
+                logger.info("[stream_rag] 节点完成: %s", name)
+                yield StreamEvent(event="node_step", data=name)
+        # 图执行完成，开始外部流式生成（generate 节点从此刻起持续活跃）
+        yield StreamEvent(event="node_start", data="generate")
+
+        # 获取最终状态（含检索到的文档）— 放到线程池避免阻塞事件循环
+        final_state = await asyncio.to_thread(agent_graph.get_state, config)
+        result = final_state.values if final_state else {}
+        logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
 
         agent_path = result.get("agent_path", [])
         # 流式模式下幻觉检测必然跳过（答案在外部流式生成），过滤掉避免误解
@@ -249,64 +274,67 @@ class RAGService:
 
             llm = create_strong_llm(streaming=True)
             full_answer = ""
-            for chunk in llm.stream(prompt):
+            async for chunk in llm.astream(prompt):
                 if chunk.content:
                     full_answer += chunk.content
                     yield StreamEvent(event="token", data=chunk.content)
 
-            # 流式生成完成后，进行幻觉检测（返回 JSON 含忠实度百分数）
+            # 流式生成完成后，进行幻觉检测（仅在开启自反思时）
             hallucination_passed = True
             hallucination_faithfulness = 100.0
-            try:
-                docs_for_check = "\n---\n".join(
-                    f"[文档 {i+1}] {doc.page_content[:500]}"
-                    for i, doc in enumerate(documents[:8])
-                )
-                check_llm = create_fast_llm()
-                check_messages = [
-                    HumanMessage(content=CHECK_HALLUCINATION_SYSTEM),
-                    HumanMessage(
-                        content=(
-                            CHECK_HALLUCINATION_USER.format(
-                                documents=docs_for_check,
-                                answer=full_answer,
-                            )
-                            + "\n\n输出要求：请返回一个 JSON 对象，包含两个字段："
-                            '"passed" (布尔值，true 表示答案忠实于文档，false 表示存在编造)，'
-                            '"faithfulness" (浮点数，0.0~100.0，精确到小数点后一位，表示答案对文档的忠实度百分比)。'
-                            '只输出 JSON，不要输出其他内容。'
-                            '示例：{"passed": true, "faithfulness": 92.5}'
+            if request.enable_reflection:
+                yield StreamEvent(event="node_start", data="check_hallucination")
+                try:
+                    docs_for_check = "\n---\n".join(
+                        f"[文档 {i+1}] {doc.page_content[:500]}"
+                        for i, doc in enumerate(documents[:8])
+                    )
+                    check_llm = create_fast_llm()
+                    check_messages = [
+                        HumanMessage(content=CHECK_HALLUCINATION_SYSTEM),
+                        HumanMessage(
+                            content=(
+                                CHECK_HALLUCINATION_USER.format(
+                                    documents=docs_for_check,
+                                    answer=full_answer,
+                                )
+                                + "\n\n输出要求：请返回一个 JSON 对象，包含两个字段："
+                                '"passed" (布尔值，true 表示答案忠实于文档，false 表示存在编造)，'
+                                '"faithfulness" (浮点数，0.0~100.0，精确到小数点后一位，表示答案对文档的忠实度百分比)。'
+                                '只输出 JSON，不要输出其他内容。'
+                                '示例：{"passed": true, "faithfulness": 92.5}'
+                            ),
                         ),
-                    ),
-                ]
-                check_response = check_llm.invoke(check_messages)
-                check_raw = check_response.content.strip()
-                # 从 LLM 返回中提取 JSON
-                import re as _re
-                json_match = _re.search(r'\{[^{}]*\}', check_raw)
-                if json_match:
-                    check_data = json.loads(json_match.group())
-                    hallucination_faithfulness = float(check_data.get("faithfulness", 100))
-                    hallucination_faithfulness = max(0.0, min(100.0, round(hallucination_faithfulness, 1)))
-                    hallucination_passed = check_data.get("passed", True)
-                else:
-                    hallucination_passed = "PASSED" in check_raw.upper() or "true" in check_raw.lower()
-                logger.info(
-                    "[stream_rag] 幻觉检测: faithfulness=%.1f%%, passed=%s",
-                    hallucination_faithfulness,
-                    str(hallucination_passed),
-                )
-            except Exception as e:
-                logger.warning("[stream_rag] 幻觉检测异常: %s", e)
+                    ]
+                    check_response = await check_llm.ainvoke(check_messages)
+                    check_raw = check_response.content.strip()
+                    # 从 LLM 返回中提取 JSON
+                    import re as _re
+                    json_match = _re.search(r'\{[^{}]*\}', check_raw)
+                    if json_match:
+                        check_data = json.loads(json_match.group())
+                        hallucination_faithfulness = float(check_data.get("faithfulness", 100))
+                        hallucination_faithfulness = max(0.0, min(100.0, round(hallucination_faithfulness, 1)))
+                        hallucination_passed = check_data.get("passed", True)
+                    else:
+                        hallucination_passed = "PASSED" in check_raw.upper() or "true" in check_raw.lower()
+                    logger.info(
+                        "[stream_rag] 幻觉检测: faithfulness=%.1f%%, passed=%s",
+                        hallucination_faithfulness,
+                        str(hallucination_passed),
+                    )
+                except Exception as e:
+                    logger.warning("[stream_rag] 幻觉检测异常: %s", e)
 
-            yield StreamEvent(
-                event="hallucination",
-                data=json.dumps({
-                    "passed": hallucination_passed,
-                    "result": "PASSED" if hallucination_passed else "FAILED",
-                    "faithfulness": hallucination_faithfulness,
-                }, ensure_ascii=False),
-            )
+                yield StreamEvent(event="node_step", data="check_hallucination")
+                yield StreamEvent(
+                    event="hallucination",
+                    data=json.dumps({
+                        "passed": hallucination_passed,
+                        "result": "PASSED" if hallucination_passed else "FAILED",
+                        "faithfulness": hallucination_faithfulness,
+                    }, ensure_ascii=False),
+                )
 
             # 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)

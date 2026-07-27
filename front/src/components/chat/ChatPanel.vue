@@ -119,14 +119,14 @@ function handleSend(query: string) {
             class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-400/10 text-emerald-400 border-emerald-400/20"
           >
             <ShieldCheck class="w-3 h-3" />
-            可信度 {{ hallucinationResults[msg.id].faithfulness }}%
+            知识忠实度 {{ hallucinationResults[msg.id].faithfulness }}%
           </span>
           <span
             v-else-if="hallucinationResults[msg.id]?.passed === false"
             class="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border bg-red-400/10 text-red-400 border-red-400/20"
           >
             <ShieldAlert class="w-3 h-3" />
-            可信度 {{ hallucinationResults[msg.id].faithfulness }}%
+            知识忠实度 {{ hallucinationResults[msg.id].faithfulness }}%
           </span>
         </div>
 

@@ -52,22 +52,24 @@ function onNewSession() {
         :isStreaming="isStreaming"
         :hallucinationResults="hallucinationResults"
         @send="send"
-        @update:enableWebSearch="enableWebSearch = $event"
-        @update:enableReflection="enableReflection = $event"
-        @update:enableRerank="enableRerank = $event"
-        @update:enableGradeDocuments="enableGradeDocuments = $event"
-        @update:enableTransformQuery="enableTransformQuery = $event"
+        @update:enableWebSearch="enableWebSearch.value = $event"
+        @update:enableReflection="enableReflection.value = $event"
+        @update:enableRerank="enableRerank.value = $event"
+        @update:enableGradeDocuments="enableGradeDocuments.value = $event"
+        @update:enableTransformQuery="enableTransformQuery.value = $event"
       />
     </div>
 
-    <!-- 会话历史侧栏 -->
-    <SessionHistory
-      :sessions="sessions"
-      :activeSessionId="sessionId"
-      :loading="historyLoading"
-      @select-session="onSelectSession"
-      @new-session="onNewSession"
-      @delete-session="deleteSession"
-    />
+    <!-- 右侧栏：会话历史 -->
+    <div class="border-l border-slate-700/50 bg-slate-900/40 w-64 flex-shrink-0 flex flex-col h-full">
+      <SessionHistory
+        :sessions="sessions"
+        :activeSessionId="sessionId"
+        :loading="historyLoading"
+        @select-session="onSelectSession"
+        @new-session="onNewSession"
+        @delete-session="deleteSession"
+      />
+    </div>
   </div>
 </template>

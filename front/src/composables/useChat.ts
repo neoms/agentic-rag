@@ -1,6 +1,7 @@
 import { ref, watch } from 'vue'
 import type { UIMessage, SourceDocument } from '../types'
 import { streamChat, getChatHistory } from '../api/chat'
+import * as flow from './agentFlowState'
 
 export interface SessionSummary {
   session_id: string
@@ -68,12 +69,12 @@ export function useChat() {
   const error = ref<string | null>(null)
   const sessions = ref<SessionSummary[]>(initSessions)
 
-  // Agent 选项
-  const enableWebSearch = ref(false)
-  const enableReflection = ref(true)
-  const enableRerank = ref(true)
-  const enableGradeDocuments = ref(true)
-  const enableTransformQuery = ref(true)
+  // Agent 选项（共享状态，Sidebar 中流程图也会读取）
+  const enableWebSearch = flow.enableWebSearch
+  const enableReflection = flow.enableReflection
+  const enableRerank = flow.enableRerank
+  const enableGradeDocuments = flow.enableGradeDocuments
+  const enableTransformQuery = flow.enableTransformQuery
 
   // 流式状态
   const streamingContent = ref('')
@@ -242,6 +243,8 @@ export function useChat() {
     streamingContent.value = ''
     streamSources.value = []
     streamAgentPath.value = []
+    flow.currentNode.value = null
+    flow.completedNodes.value = []
 
     const assistantMsg: UIMessage = {
       id: crypto.randomUUID(),
@@ -310,6 +313,15 @@ export function useChat() {
                 messages.value[msgIndex].sources = streamSources.value
               } catch {}
               break
+            case 'node_start':
+              // 节点开始执行 → 设置活跃节点，如果之前已完成则移除（处理 generate 重新激活等场景）
+              flow.currentNode.value = data
+              flow.completedNodes.value = flow.completedNodes.value.filter(n => n !== data)
+              break
+            case 'node_step':
+              // 节点执行完成 → 标记为已完成
+              flow.completedNodes.value = [...flow.completedNodes.value, data]
+              break
             case 'path':
               try {
                 streamAgentPath.value = JSON.parse(data)
@@ -322,6 +334,13 @@ export function useChat() {
               break
             case 'done':
               messages.value[msgIndex].isStreaming = false
+              // 将手动激活的 generate/check_hallucination 补回已完成列表
+              for (const n of ['generate', 'check_hallucination']) {
+                if (!flow.completedNodes.value.includes(n)) {
+                  flow.completedNodes.value = [...flow.completedNodes.value, n]
+                }
+              }
+              flow.currentNode.value = null
               break
             case 'hallucination':
               try {
@@ -340,6 +359,7 @@ export function useChat() {
                 error.value = data || '流式对话出错'
               }
               messages.value[msgIndex].isStreaming = false
+              flow.currentNode.value = null
               break
           }
 

@@ -3,7 +3,7 @@
 import logging
 import json
 from fastapi import APIRouter, Depends
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import get_rag_service
 from src.services.rag_service import RAGService
@@ -21,12 +21,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
     "/stream",
     summary="Agent 模式流式对话",
     description="SSE 流式输出，事件类型：token（文本令牌）、source（来源文档）、path（Agent 路径）、done（完成）",
-    responses={
-        200: {
-            "description": "SSE 流式事件",
-            "content": {"text/event-stream": {}},
-        }
-    },
 )
 async def stream_chat(
     request: AgenticChatRequest,
@@ -34,21 +28,27 @@ async def stream_chat(
 ):
     logger.info("API 请求: POST /chat/stream, session=%s, query='%s', web_search=%s",
                 request.session_id, request.query[:80], request.enable_web_search)
+
     async def event_generator():
         try:
             async for event in service.agentic_rag_stream(request):
-                yield {
-                    "event": event.event,
-                    "data": event.data,
-                }
+                # 手动构造 SSE 格式确保即时发送
+                line = f"event: {event.event}\ndata: {event.data}\n\n"
+                yield line.encode("utf-8")
         except Exception as e:
             logger.exception("流式对话失败")
-            yield {
-                "event": "error",
-                "data": json.dumps({"detail": str(e)}, ensure_ascii=False),
-            }
+            err_line = f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
+            yield err_line.encode("utf-8")
 
-    return EventSourceResponse(event_generator())
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        },
+    )
 
 
 @router.get(

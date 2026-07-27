@@ -44,9 +44,9 @@ function formatTime(ts: number): string {
 </script>
 
 <template>
-  <div class="border-l border-slate-700/50 bg-slate-900/40 w-64 flex-shrink-0 flex flex-col h-full">
+  <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
     <!-- 标题栏 + 新建按钮 -->
-    <div class="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
+    <div class="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between flex-shrink-0">
       <div class="flex items-center gap-2">
         <History class="w-4 h-4 text-slate-500" />
         <span class="text-xs font-medium text-slate-400">会话历史</span>
