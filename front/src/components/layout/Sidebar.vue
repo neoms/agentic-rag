@@ -10,24 +10,30 @@ const navItems = [
 ]
 
 // ── SVG 节点布局 ──
-// 主流程: retrieve → rerank → grade → generate → check_hallucination (垂直居中)
+// 主流程: retrieve → [三路并行] bm25/hyde/multi_query → rerank → grade → generate → check_hallucination
 // 左分支: transform_query (不相关时, 循环回 retrieve)
 // 右分支: web_search      (不相关+联网时, 进入 generate)
-// viewBox 0 0 220 340
+// viewBox 0 0 220 380
 interface N { id: string; label: string; x: number; y: number; w: number; h: number }
 const NODES: N[] = [
-  { id: 'retrieve',             label: '检索',       x: 55, y: 5,   w: 110, h: 22 },
-  { id: 'rerank_documents',     label: '重排序',     x: 55, y: 40,  w: 110, h: 22 },
-  { id: 'grade_documents',      label: '文档评估',   x: 55, y: 75,  w: 110, h: 22 },
-  { id: 'transform_query',      label: '查询重写',   x: 5,  y: 130, w: 92,  h: 22 },
-  { id: 'web_search',           label: '联网搜索',   x: 123,y: 130, w: 92,  h: 22 },
-  { id: 'generate',             label: '生成回答',   x: 55, y: 200, w: 110, h: 22 },
-  { id: 'check_hallucination',  label: '幻觉检测',   x: 55, y: 270, w: 110, h: 22 },
+  { id: 'retrieve',             label: '检索(语义)', x: 55, y: 5,   w: 110, h: 22 },
+  { id: 'bm25_retrieve',        label: 'BM25',       x: 5,  y: 38,  w: 62,  h: 22 },
+  { id: 'hyde_retrieve',        label: 'HyDE',       x: 79, y: 38,  w: 62,  h: 22 },
+  { id: 'multi_query_retrieve', label: '多角度查询',  x: 153,y: 38,  w: 62,  h: 22 },
+  { id: 'rerank_documents',     label: '重排序',     x: 55, y: 75,  w: 110, h: 22 },
+  { id: 'grade_documents',      label: '文档评估',   x: 55, y: 110, w: 110, h: 22 },
+  { id: 'transform_query',      label: '查询重写',   x: 5,  y: 165, w: 92,  h: 22 },
+  { id: 'web_search',           label: '联网搜索',   x: 123,y: 165, w: 92,  h: 22 },
+  { id: 'generate',             label: '生成回答',   x: 55, y: 235, w: 110, h: 22 },
+  { id: 'check_hallucination',  label: '幻觉检测',   x: 55, y: 305, w: 110, h: 22 },
 ]
 const byId = (id: string): N => NODES.find(n => n.id === id)!
 
 // ── 状态 ──
 const ENABLED: Record<string, keyof typeof flow> = {
+  bm25_retrieve: 'enableBm25',
+  hyde_retrieve: 'enableHyde',
+  multi_query_retrieve: 'enableMultiQuery',
   rerank_documents: 'enableRerank',
   grade_documents: 'enableGradeDocuments',
   web_search: 'enableWebSearch',
@@ -89,10 +95,19 @@ const TEXT: Record<string, string> = {
         <span class="text-[10px] font-medium text-slate-500">Agent 流程</span>
       </div>
 
-      <svg viewBox="0 0 220 310" class="w-full" style="max-height: 310px">
+      <svg viewBox="0 0 220 355" class="w-full" style="max-height: 355px">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+          </marker>
+          <marker id="arrCyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#06b6d4"/>
+          </marker>
+          <marker id="arrPink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f472b6"/>
+          </marker>
+          <marker id="arrIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
           </marker>
           <filter id="gl">
             <feGaussianBlur stdDeviation="2.5" result="b"/>
@@ -102,8 +117,17 @@ const TEXT: Record<string, string> = {
 
         <!-- ═══ 直线上箭头 (g=灰色) ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
-          <!-- 主流程: retrieve → rerank → grade -->
-          <line x1="110" :y1="byId('retrieve').y+22"         x2="110" :y2="byId('rerank_documents').y"     marker-end="url(#arr)"/>
+          <!-- retrieve → 三路分支 (斜线) -->
+          <line x1="90"  :y1="byId('retrieve').y+22" x2="36"  :y2="byId('bm25_retrieve').y"        marker-end="url(#arrCyan)"/>
+          <line x1="110" :y1="byId('retrieve').y+22" x2="110" :y2="byId('hyde_retrieve').y"        marker-end="url(#arrPink)"/>
+          <line x1="130" :y1="byId('retrieve').y+22" x2="184" :y2="byId('multi_query_retrieve').y" marker-end="url(#arrIndigo)"/>
+
+          <!-- 三路分支 → rerank (收敛) -->
+          <line x1="36"  :y1="byId('bm25_retrieve').y+22"        x2="80"  :y2="byId('rerank_documents').y"  marker-end="url(#arrCyan)"/>
+          <line x1="110" :y1="byId('hyde_retrieve').y+22"        x2="110" :y2="byId('rerank_documents').y"  marker-end="url(#arrPink)"/>
+          <line x1="184" :y1="byId('multi_query_retrieve').y+22" x2="140" :y2="byId('rerank_documents').y"  marker-end="url(#arrIndigo)"/>
+
+          <!-- 主流程: rerank → grade -->
           <line x1="110" :y1="byId('rerank_documents').y+22" x2="110" :y2="byId('grade_documents').y"      marker-end="url(#arr)"/>
 
           <!-- grade → generate (相关) -->
@@ -122,22 +146,22 @@ const TEXT: Record<string, string> = {
 
         <!-- ═══ 回环曲线 ═══ -->
         <!-- transform_query → retrieve (循环回检索) -->
-        <path d="M 50 152 C 50 170, -5 160, -5 100 C -5 30, 40 20, 55 20"
+        <path d="M 50 187 C 50 205, -5 195, -5 135 C -5 65, 40 55, 55 55"
               fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr)"/>
         <!-- check_hallucination → generate (检测失败重试) -->
-        <path d="M 170 281 C 195 281, 195 210, 170 210"
+        <path d="M 170 316 C 195 316, 195 245, 170 245"
               fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr)"/>
 
         <!-- ═══ 分支标签 ═══ -->
-        <text x="118" y="107" class="text-[7px] fill-green-500/70">相关</text>
-        <text x="145" y="110" class="text-[7px] fill-orange-400/70">不相关+联网</text>
-        <text x="52"  y="110" class="text-[7px] fill-orange-400/70">不相关</text>
-        <text x="130" y="246" class="text-[7px] fill-slate-500">开自反思</text>
-        <text x="178" y="246" class="text-[7px] fill-slate-500">关</text>
+        <text x="118" y="142" class="text-[7px] fill-green-500/70">相关</text>
+        <text x="145" y="145" class="text-[7px] fill-orange-400/70">不相关+联网</text>
+        <text x="52"  y="145" class="text-[7px] fill-orange-400/70">不相关</text>
+        <text x="130" y="281" class="text-[7px] fill-slate-500">开自反思</text>
+        <text x="178" y="281" class="text-[7px] fill-slate-500">关</text>
 
         <!-- ═══ 回环标签 ═══ -->
-        <text x="25" y="104" class="text-[7px] fill-amber-500/80" transform="rotate(-90 25 104)">回检索</text>
-        <text x="183" y="257" class="text-[7px] fill-red-400/80">失败重试</text>
+        <text x="25" y="139" class="text-[7px] fill-amber-500/80" transform="rotate(-90 25 139)">回检索</text>
+        <text x="183" y="292" class="text-[7px] fill-red-400/80">失败重试</text>
 
         <!-- ═══ 节点 ═══ -->
         <g v-for="n in NODES" :key="n.id">

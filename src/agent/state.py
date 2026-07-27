@@ -60,3 +60,11 @@ class AgentState(TypedDict):
     enable_rerank: bool
     enable_grade_documents: bool
     enable_transform_query: bool
+    enable_bm25: bool
+    enable_hyde: bool
+    enable_multi_query: bool
+
+    # 各检索策略独立结果（并行写避免冲突）
+    documents_bm25: list[Document]
+    documents_hyde: list[Document]
+    documents_multi_query: list[Document]

@@ -271,6 +271,9 @@ export function useChat() {
         enable_rerank: enableRerank.value,
         enable_grade_documents: enableGradeDocuments.value,
         enable_transform_query: enableTransformQuery.value,
+        enable_bm25: flow.enableBm25.value,
+        enable_hyde: flow.enableHyde.value,
+        enable_multi_query: flow.enableMultiQuery.value,
         stream: true,
       })
 

@@ -17,11 +17,15 @@ from src.agent.prompts import (
     GENERATE_ANSWER_USER,
     CHECK_HALLUCINATION_SYSTEM,
     CHECK_HALLUCINATION_USER,
+    HYDE_GENERATE_USER,
+    MULTI_QUERY_GENERATE_USER,
 )
 from src.agent.tools import ALL_TOOLS, _duckduckgo_search
 from src.backend.llm import create_llm_client, create_fast_llm, create_strong_llm
+from src.backend.embedding import get_embedding_client
 from src.backend.reranker import rerank_documents
 from src.store.vector_store import vector_store
+from src.retrieval.bm25 import bm25_retriever
 from src.memory.manager import memory_manager
 from src.config.settings import settings
 
@@ -319,3 +323,166 @@ def decide_retrieval_strategy(state: AgentState) -> dict[str, Any]:
         return {"agent_path": ["decide_strategy (no documents)"]}
 
     return {"agent_path": ["decide_strategy"]}
+
+
+# ==================== 新增检索策略节点 ====================
+
+
+def _merge_documents(
+    *doc_lists: list[Document], key_len: int = 200,
+) -> list[Document]:
+    """合并多个文档列表并去重，以 page_content[:key_len] 为 key"""
+    seen: set[str] = set()
+    merged: list[Document] = []
+    for docs in doc_lists:
+        for doc in docs:
+            key = doc.page_content[:key_len]
+            if key not in seen:
+                seen.add(key)
+                merged.append(doc)
+    return merged
+
+
+def bm25_retrieve_node(state: AgentState) -> dict[str, Any]:
+    """BM25 关键词检索节点
+
+    通过条件边 Send 调度，只有 enable_bm25=True 时才会被调用。
+    结果写入独立 State key documents_bm25 避免并行冲突。
+    """
+    query = state.get("rewritten_query") or state["query"]
+    logger.info("BM25 检索节点: query='%s'", query)
+
+    try:
+        results = bm25_retriever.search(query, top_k=settings.retrieval_top_k)
+        logger.info("BM25 检索完成: %d 个结果", len(results))
+        return {
+            "documents_bm25": results,
+            "agent_path": ["bm25_retrieve"],
+        }
+    except Exception as e:
+        logger.warning("BM25 检索异常: %s", e)
+        return {
+            "documents_bm25": [],
+            "agent_path": ["bm25_retrieve (error)"],
+        }
+
+
+def hyde_retrieve_node(state: AgentState) -> dict[str, Any]:
+    """HyDE 假设文档嵌入检索节点
+
+    1. LLM 生成假设答案
+    2. Embedding 向量化假设答案
+    3. 用假设答案的向量做语义检索
+    结果写入独立 State key documents_hyde。
+    """
+    query = state.get("rewritten_query") or state["query"]
+    logger.info("HyDE 检索节点: query='%s'", query)
+
+    try:
+        # 1. 生成假设答案
+        fast_llm = create_fast_llm()
+        hyde_prompt = HYDE_GENERATE_USER.format(query=query)
+        response = fast_llm.invoke(hyde_prompt)
+        hypothetical_doc = response.content.strip()
+        logger.info("HyDE: 假设答案生成完成，%d 字", len(hypothetical_doc))
+
+        # 2. 向量化假设答案
+        embedder = get_embedding_client()
+        hyde_embedding = embedder.embed_query(hypothetical_doc)
+
+        # 3. 用假设答案的向量做语义检索
+        k = settings.retrieval_top_k
+        results = vector_store.vector_store.similarity_search_by_vector(
+            hyde_embedding, k=k,
+        )
+
+        logger.info("HyDE 检索完成: %d 个结果", len(results))
+        return {
+            "documents_hyde": list(results),
+            "agent_path": ["hyde_retrieve"],
+        }
+    except Exception as e:
+        logger.warning("HyDE 检索异常: %s", e)
+        return {
+            "documents_hyde": [],
+            "agent_path": ["hyde_retrieve (error)"],
+        }
+
+
+def multi_query_retrieve_node(state: AgentState) -> dict[str, Any]:
+    """Multi-Query 多角度查询检索节点
+
+    1. LLM 生成 N 个查询变体
+    2. 对每个变体做语义检索
+    3. 全域去重合并
+    结果写入独立 State key documents_multi_query。
+    """
+    query = state.get("rewritten_query") or state["query"]
+    logger.info("Multi-Query 检索节点: query='%s'", query)
+
+    try:
+        # 1. 生成查询变体
+        fast_llm = create_fast_llm()
+        num_vars = settings.multi_query_num_variations
+        mq_prompt = MULTI_QUERY_GENERATE_USER.format(
+            query=query, num_variations=num_vars,
+        )
+        response = fast_llm.invoke(mq_prompt)
+        raw = response.content.strip()
+        # 解析 LLM 输出的多行查询变体
+        variants = [line.strip() for line in raw.split("\n") if line.strip()]
+        # 去掉可能的编号前缀（如 "1. ", "- "）
+        variants = [
+            v.split(". ", 1)[-1] if ". " in v[:5] else v
+            for v in variants
+        ]
+        variants = [v for v in variants if v != query][:num_vars]
+        logger.info("Multi-Query: 生成 %d 个变体: %s", len(variants), variants)
+
+        # 2. 对每个变体做语义检索，合并去重
+        all_results: list[Document] = []
+        for v in [query] + variants:
+            results = vector_store.search(v, top_k=settings.retrieval_top_k)
+            all_results.extend(doc for doc, _ in results)
+
+        # 3. 全域去重
+        merged = _merge_documents(*all_results)
+        logger.info("Multi-Query 检索完成: 去重后 %d 个结果", len(merged))
+
+        return {
+            "documents_multi_query": merged,
+            "agent_path": ["multi_query_retrieve"],
+        }
+    except Exception as e:
+        logger.warning("Multi-Query 检索异常: %s", e)
+        return {
+            "documents_multi_query": [],
+            "agent_path": ["multi_query_retrieve (error)"],
+        }
+
+
+def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
+    """检索结果合并节点
+
+    从四个来源合并文档并去重：
+    1. documents（基础向量+MMR 检索）
+    2. documents_bm25（BM25 检索，仅当 enable_bm25=True 时有值）
+    3. documents_hyde（HyDE 检索，仅当 enable_hyde=True 时有值）
+    4. documents_multi_query（Multi-Query 检索，仅当 enable_multi_query=True 时有值）
+    """
+    base = state.get("documents", [])
+    bm25 = state.get("documents_bm25", [])
+    hyde = state.get("documents_hyde", [])
+    multi = state.get("documents_multi_query", [])
+
+    merged = _merge_documents(base, bm25, hyde, multi)
+
+    logger.info(
+        "合并检索结果: base=%d, bm25=%d, hyde=%d, multi=%d → merged=%d",
+        len(base), len(bm25), len(hyde), len(multi), len(merged),
+    )
+
+    return {
+        "documents": merged,
+        "agent_path": ["merge_retrieval"],
+    }

@@ -17,6 +17,9 @@ class AgenticChatRequest(ChatRequest):
     enable_rerank: bool = True
     enable_grade_documents: bool = True
     enable_transform_query: bool = True
+    enable_bm25: bool = False
+    enable_hyde: bool = False
+    enable_multi_query: bool = False
     stream: bool = False
 
 

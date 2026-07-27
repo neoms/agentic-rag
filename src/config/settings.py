@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
     allowed_extensions: str = "pdf,md,txt"
 
+    # ========== HyDE 假设文档嵌入 ==========
+    hyde_model: str = "qwen-turbo"  # 用于生成假设答案的模型
+
+    # ========== Multi-Query 多角度查询 ==========
+    multi_query_num_variations: int = 3  # 生成的查询变体数量
+
     # ========== 服务 ==========
     app_host: str = "0.0.0.0"
     app_port: int = 8000
