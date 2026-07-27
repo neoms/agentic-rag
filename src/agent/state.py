@@ -1,5 +1,6 @@
 """Agent 状态定义 - LangGraph StateGraph 的全局共享状态"""
 
+import operator
 from typing import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.documents import Document
@@ -44,7 +45,8 @@ class AgentState(TypedDict):
     hallucination_detected: bool
 
     # Agent 执行路径记录（用于可观测性）
-    agent_path: list[str]
+    # 使用 operator.add reducer 以支持并行节点（Send API）的并发写入合并
+    agent_path: Annotated[list[str], operator.add]
 
     # 是否启用流式输出
     stream: bool
