@@ -231,8 +231,16 @@ def check_hallucination(state: AgentState) -> dict[str, Any]:
     """幻觉检测节点：验证生成的答案是否与文档上下文一致"""
     answer = state.get("answer", "")
     documents = state.get("documents", [])
+    stream_mode = state.get("stream", False)
 
     if not answer or not documents:
+        # 流式模式下答案由外部生成，此处仅为路径标记（实际检测在 rag_service 中）
+        if stream_mode and documents:
+            logger.info("幻觉检测节点: 流式模式，标记路径")
+            return {
+                "hallucination_detected": False,
+                "agent_path": ["check_hallucination"],
+            }
         return {
             "hallucination_detected": False,
             "agent_path": ["check_hallucination (skipped)"],
@@ -563,6 +571,7 @@ def kg_retrieve_node(state: AgentState) -> dict[str, Any]:
             logger.info("KG 检索无结果")
             return {
                 "kg_context": "",
+                "kg_intent": False,  # 避免后续循环重复 Send
                 "agent_path": ["kg_retrieve (no results)"],
             }
 
@@ -571,6 +580,7 @@ def kg_retrieve_node(state: AgentState) -> dict[str, Any]:
 
         return {
             "kg_context": context,
+            "kg_intent": False,  # 已完成 KG 检索，后续循环不再重复触发
             "agent_path": ["kg_retrieve"],
         }
 
@@ -578,5 +588,6 @@ def kg_retrieve_node(state: AgentState) -> dict[str, Any]:
         logger.warning("KG 检索异常: %s", e)
         return {
             "kg_context": "",
+            "kg_intent": False,  # 避免后续循环重复 Send
             "agent_path": ["kg_retrieve (error)"],
         }

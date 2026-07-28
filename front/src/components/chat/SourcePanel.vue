@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SourceDocument } from '../../types'
-import { ChevronDown, FileText, ExternalLink, Globe, Database } from 'lucide-vue-next'
+import { ChevronDown, FileText, ExternalLink, Globe, Database, Network } from 'lucide-vue-next'
 
 const props = defineProps<{
   sources: SourceDocument[]
@@ -21,6 +21,10 @@ function isWebSource(source: SourceDocument): boolean {
   return source.metadata?.source === 'web'
 }
 
+function isKgSource(source: SourceDocument): boolean {
+  return source.metadata?.source === 'knowledge_graph'
+}
+
 function getSourceUrl(source: SourceDocument): string {
   return (source.metadata?.url as string) || ''
 }
@@ -28,6 +32,9 @@ function getSourceUrl(source: SourceDocument): string {
 function getSourceLabel(source: SourceDocument): string {
   if (isWebSource(source)) {
     return (source.metadata?.title as string) || '网页搜索结果'
+  }
+  if (isKgSource(source)) {
+    return (source.metadata?.filename as string) || '知识图谱'
   }
   return (source.metadata?.filename as string) || '本地文档'
 }
@@ -76,7 +83,9 @@ function openUrl(url: string) {
           'border rounded-lg p-3 transition-colors',
           isWebSource(source)
             ? 'bg-blue-500/5 border-blue-500/20 hover:border-blue-500/40 cursor-pointer'
-            : 'bg-slate-800/60 border-slate-700/50'
+            : isKgSource(source)
+              ? 'bg-orange-500/5 border-orange-500/20'
+              : 'bg-slate-800/60 border-slate-700/50'
         ]"
         @click="isWebSource(source) && getSourceUrl(source) && openUrl(getSourceUrl(source))"
       >
@@ -89,15 +98,19 @@ function openUrl(url: string) {
               v-if="isWebSource(source)"
               class="w-3 h-3 text-blue-400 flex-shrink-0"
             />
+            <Network
+              v-else-if="isKgSource(source)"
+              class="w-3 h-3 text-orange-400 flex-shrink-0"
+            />
             <Database
               v-else
               class="w-3 h-3 text-emerald-400 flex-shrink-0"
             />
-            <span class="text-[10px] font-medium truncate" :class="isWebSource(source) ? 'text-blue-300' : 'text-slate-400'">
+            <span class="text-[10px] font-medium truncate" :class="isWebSource(source) ? 'text-blue-300' : isKgSource(source) ? 'text-orange-300' : 'text-slate-400'">
               {{ getSourceLabel(source) }}
             </span>
             <span
-              v-if="source.score !== null && !isWebSource(source)"
+              v-if="source.score !== null && !isWebSource(source) && !isKgSource(source)"
               :class="['text-[10px] font-medium flex-shrink-0', getScoreColor(source.score)]"
             >
               相似度: {{ (source.score * 100).toFixed(1) }}%
@@ -126,9 +139,18 @@ function openUrl(url: string) {
             {{ getSourceUrl(source) }}
           </a>
         </div>
+        <!-- 知识图谱来源标识 -->
+        <div
+          v-if="isKgSource(source)"
+          class="mt-2 pt-2 border-t border-orange-500/10"
+        >
+          <span class="text-[10px] text-orange-400/70 font-mono">
+            来源: 知识图谱结构化检索
+          </span>
+        </div>
         <!-- 本地文档元数据 -->
         <div
-          v-if="!isWebSource(source) && Object.keys(source.metadata).length > 0"
+          v-if="!isWebSource(source) && !isKgSource(source) && Object.keys(source.metadata).length > 0"
           class="mt-2 pt-2 border-t border-slate-700/30 flex flex-wrap gap-1.5"
         >
           <span

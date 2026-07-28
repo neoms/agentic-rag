@@ -275,7 +275,6 @@ export function useChat() {
         enable_hyde: flow.enableHyde.value,
         enable_multi_query: flow.enableMultiQuery.value,
         enable_kg: flow.enableKg.value,
-        stream: true,
       })
 
       reader = response.body?.getReader() ?? null
@@ -338,11 +337,13 @@ export function useChat() {
               break
             case 'done':
               messages.value[msgIndex].isStreaming = false
-              // 将手动激活的 generate/check_hallucination 补回已完成列表
-              for (const n of ['generate', 'check_hallucination']) {
-                if (!flow.completedNodes.value.includes(n)) {
-                  flow.completedNodes.value = [...flow.completedNodes.value, n]
-                }
+              // 将手动激活的 generate 补回已完成列表（始终执行）
+              if (!flow.completedNodes.value.includes('generate')) {
+                flow.completedNodes.value = [...flow.completedNodes.value, 'generate']
+              }
+              // check_hallucination 仅在自反思开启且实际运行时补回
+              if (enableReflection.value && !flow.completedNodes.value.includes('check_hallucination')) {
+                flow.completedNodes.value = [...flow.completedNodes.value, 'check_hallucination']
               }
               flow.currentNode.value = null
               break

@@ -1,4 +1,4 @@
-"""Agent/RAG 服务层 - 对话交互、Agent 编排的业务逻辑"""
+"""Agent/RAG 服务层 - 流式 Agent 编排与对话交互"""
 
 import time
 import asyncio
@@ -12,16 +12,12 @@ from src.agent.graph import agent_graph
 from src.agent.state import AgentState
 from src.agent.prompts import CHECK_HALLUCINATION_SYSTEM, CHECK_HALLUCINATION_USER
 from src.models.chat import (
-    ChatRequest,
     AgenticChatRequest,
-    ChatResponse,
-    AgenticChatResponse,
     SourceDocument,
     ChatHistoryResponse,
     ChatHistoryMessage,
     StreamEvent,
 )
-from src.store.vector_store import vector_store
 from src.memory.manager import memory_manager
 from src.backend.llm import create_strong_llm, create_fast_llm
 
@@ -29,145 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    """RAG 服务"""
-
-    def simple_rag(self, request: ChatRequest) -> ChatResponse:
-        """简单 RAG：检索 + 生成，不走 Agent 图"""
-        t0 = time.time()
-        query = request.query
-        session_id = request.session_id
-        top_k = request.top_k
-        logger.info("[simple_rag] 请求: session=%s, query='%s', top_k=%s", session_id, query[:80], top_k)
-
-        # 检索
-        results = vector_store.search(query, top_k=top_k)
-        documents = [doc for doc, _ in results]
-        sources = [
-            SourceDocument(
-                content=doc.page_content,
-                metadata=doc.metadata,
-                score=score,
-            )
-            for doc, score in results
-        ]
-        logger.info("[simple_rag] 检索完成: %d 个结果", len(sources))
-
-        # 生成答案
-        if not documents:
-            answer = "未找到相关文档，请尝试上传相关文档或换个问题。"
-            logger.info("[simple_rag] 无文档, 返回兜底回答")
-        else:
-            docs_text = "\n\n---\n\n".join(
-                f"来源: {doc.metadata.get('filename', 'unknown')}\n内容: {doc.page_content}"
-                for doc in documents[:5]
-            )
-            chat_history = memory_manager.get_chat_history_string(session_id)
-
-            prompt = f"""你是一个专业的知识问答助手。请基于提供的文档上下文回答用户问题。
-
-规则：
-1. 优先使用提供的文档信息回答
-2. 如果文档信息不足以回答问题，请明确说明
-3. 回答要简洁、准确、有条理
-4. 使用中文回答
-
-文档上下文：
-{docs_text}
-
-对话历史：
-{chat_history or '无'}
-
-用户问题：{query}
-
-请回答："""
-
-            llm = create_strong_llm()
-            result = llm.invoke(prompt)
-            answer = result.content.strip()
-
-        # 记录对话
-        memory_manager.add_interaction(session_id, query, answer)
-
-        elapsed = time.time() - t0
-        logger.info("[simple_rag] 完成: answer_len=%d, sources=%d, elapsed=%.2fs", len(answer), len(sources), elapsed)
-
-        return ChatResponse(
-            answer=answer,
-            session_id=session_id,
-            sources=sources,
-        )
-
-    def agentic_rag(self, request: AgenticChatRequest) -> AgenticChatResponse:
-        """Agent 模式 RAG：走完整的 LangGraph 状态图（含自反思、查询重写、幻觉检测等）"""
-        t0 = time.time()
-        logger.info("[agentic_rag] 请求: session=%s, query='%s', web_search=%s, reflection=%s",
-                     request.session_id, request.query[:80], request.enable_web_search, request.enable_reflection)
-
-        initial_state: AgentState = {
-            "query": request.query,
-            "session_id": request.session_id,
-            "messages": [],
-            "documents": [],
-            "rewritten_query": "",
-            "documents_relevant": False,
-            "iteration_count": 0,
-            "max_iterations": 3,
-            "answer": "",
-            "hallucination_detected": False,
-            "agent_path": [],
-            "stream": request.stream,
-            "tool_calls": [],
-            "enable_web_search": request.enable_web_search,
-            "enable_reflection": request.enable_reflection,
-            "enable_rerank": request.enable_rerank,
-            "enable_grade_documents": request.enable_grade_documents,
-            "enable_transform_query": request.enable_transform_query,
-            "enable_bm25": request.enable_bm25,
-            "enable_hyde": request.enable_hyde,
-            "enable_multi_query": request.enable_multi_query,
-            "documents_bm25": [],
-            "documents_hyde": [],
-            "documents_multi_query": [],
-            "enable_kg": request.enable_kg,
-            "kg_intent": False,
-            "kg_context": "",
-        }
-
-        # 运行 Agent 图
-        config = {"configurable": {"thread_id": request.session_id}}
-        result = agent_graph.invoke(initial_state, config)
-
-        # 提取结果
-        answer = result.get("answer", "Agent 处理完成，但未生成回答。")
-        agent_path = result.get("agent_path", [])
-        tool_calls_raw = result.get("tool_calls", [])
-        iteration_count = result.get("iteration_count", 0)
-        documents = result.get("documents", [])
-
-        # 构建来源信息
-        sources = [
-            SourceDocument(
-                content=doc.page_content,
-                metadata=doc.metadata,
-            )
-            for doc in documents[:5]
-        ]
-
-        # 记录对话
-        memory_manager.add_interaction(request.session_id, request.query, answer)
-
-        elapsed = time.time() - t0
-        logger.info("[agentic_rag] 完成: answer_len=%d, path=%s, iterations=%d, docs=%d, elapsed=%.2fs",
-                     len(answer), agent_path, iteration_count, len(documents), elapsed)
-
-        return AgenticChatResponse(
-            answer=answer,
-            session_id=request.session_id,
-            sources=sources,
-            reflection_count=iteration_count,
-            tool_calls=tool_calls_raw,
-            agent_path=agent_path,
-        )
+    """RAG 服务（仅流式模式）"""
 
     async def agentic_rag_stream(
         self, request: AgenticChatRequest
@@ -209,7 +67,8 @@ class RAGService:
 
         # 使用 astream_events 获取节点的开始/完成事件（on_chain_start/on_chain_end）
         # generate/check_hallucination 不在此处发送，由外部流式生成和幻觉检测阶段手动控制
-        config = {"configurable": {"thread_id": request.session_id}}
+        # recursion_limit=50：KG 开启时 Send 分支 + 查询重写循环可能超过默认 25
+        config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 50}
         GRAPH_NODES = {
             "retrieve", "rerank_documents", "grade_documents",
             "web_search", "transform_query", "tools",
@@ -237,21 +96,21 @@ class RAGService:
         logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
 
         agent_path = result.get("agent_path", [])
-        # 流式模式下幻觉检测必然跳过（答案在外部流式生成），过滤掉避免误解
+        # 过滤掉 graph 内部标记为 skipped 的节点（非流式模式或空状态下的安全兜底）
         agent_path = [p for p in agent_path if "skipped" not in p]
-        # 统一 generate 标签
+        # 统一 generate / check_hallucination 标签（流式模式下保留运行过的节点）
         agent_path = [p.replace(" (streaming)", "") for p in agent_path]
         documents = result.get("documents", [])
         logger.info("[stream_rag] 状态图完成: path=%s, docs=%d, graph_elapsed=%.2fs",
                      agent_path, len(documents), time.time() - t0)
 
-        # 发送检索结果来源
+        # 发送检索结果来源（全部传给 LLM 的参考源）
         sources = [
             SourceDocument(
                 content=doc.page_content[:300],
                 metadata=doc.metadata,
             )
-            for doc in documents[:3]
+            for doc in documents
         ]
         yield StreamEvent(
             event="source",
@@ -267,7 +126,7 @@ class RAGService:
         # 流式生成答案
         if documents:
             doc_parts: list[str] = []
-            for doc in documents[:5]:
+            for doc in documents:
                 src = doc.metadata.get("url") or doc.metadata.get("filename", "unknown")
                 url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
                 doc_parts.append(f"来源: {src}{url_info}\n内容: {doc.page_content}")

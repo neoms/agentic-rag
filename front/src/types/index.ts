@@ -8,13 +8,9 @@ export interface HealthResponse {
 }
 
 // ===== 对话模型 =====
-export interface ChatRequest {
+export interface AgenticChatRequest {
   query: string
   session_id?: string
-  top_k?: number | null
-}
-
-export interface AgenticChatRequest extends ChatRequest {
   enable_web_search?: boolean
   enable_reflection?: boolean
   enable_rerank?: boolean
@@ -24,25 +20,12 @@ export interface AgenticChatRequest extends ChatRequest {
   enable_hyde?: boolean
   enable_multi_query?: boolean
   enable_kg?: boolean
-  stream?: boolean
 }
 
 export interface SourceDocument {
   content: string
   metadata: Record<string, string | number>
   score: number | null
-}
-
-export interface ChatResponse {
-  answer: string
-  session_id: string
-  sources: SourceDocument[]
-  reflection_count: number
-}
-
-export interface AgenticChatResponse extends ChatResponse {
-  tool_calls: Record<string, string | number | boolean>[]
-  agent_path: string[]
 }
 
 export interface ChatHistoryMessage {
