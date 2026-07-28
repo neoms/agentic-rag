@@ -1,0 +1,40 @@
+{"question": "小象科技的CEO是谁？", "answer": "小象科技的CEO是李明，他是联合创始人，曾任阿里巴巴高级技术总监，拥有清华大学计算机博士学位，主攻分布式系统与大数据处理。"}
+{"question": "李明创建了哪些产品？", "answer": "李明创建了NexusML机器学习平台，并且是XCloud智能数据平台的创始人之一，UniChat也是由小象科技团队（李明是CEO）孵化而来。他亲自带队研发NexusML。"}
+{"question": "张小伟和王芳分别在小象科技担任什么职位？", "answer": "张小伟是小象科技的CTO（首席技术官，联合创始人），王芳是产品副总裁。张小伟负责技术研发，王芳负责产品战略与商业化。"}
+{"question": "小象科技有哪些核心产品？它们分别用于什么场景？", "answer": "小象科技有四个核心产品：1）XCloud，企业级数据管理与分析平台，用于数据集成、开发和BI可视化；2）DataMesh，数据网格协作平台，用于数据产品管理和联邦治理；3）NexusML，机器学习平台，用于模型训练、部署和MLOps；4）UniChat，智能对话与知识管理平台，用于企业内部知识管理和对话服务。"}
+{"question": "DataMesh的核心理念是什么？由谁主导设计？", "answer": "DataMesh的核心理念是「去中心化但统一治理」，推行数据网格（Data Mesh）架构，将大型单体数据平台拆分为自治的数据产品单元。它由CTO张小伟主导设计。"}
+{"question": "GPT-4 和 Claude 3.5 Sonnet 在 MMLU 基准测试上的得分分别是多少？", "answer": "GPT-4 在 MMLU 基准测试上的得分是 86.4%，Claude 3.5 Sonnet 的 MMLU 得分是 88.7%。Claude 3.5 Sonnet 略高于 GPT-4。"}
+{"question": "DeepSeek V3 采用了什么架构？参数量是多少？由哪家公司开发？", "answer": "DeepSeek V3 采用了 MoE（混合专家）架构，总参数量达到671B，但每次推理仅激活37B参数。它由深度求索（DeepSeek AI）公司开发。"}
+{"question": "Qwen 系列大模型在中文能力方面相比 GPT-4 有什么优势？", "answer": "Qwen 系列在中文理解和生成方面表现最优，在 C-Eval 和 CMMLU 等中文基准测试中领先。GPT-4 的中文能力也达到高水平，但在中文特有表达如成语、文言文方面略有不足。Qwen 由阿里云开发，采用开源策略。"}
+{"question": "Llama 3.1-405B 由哪家公司开发？它和 Qwen-Max 在 MMLU 上的得分对比如何？", "answer": "Llama 3.1-405B 由 Meta AI 开发，在 MMLU 上得分 85.9%。Qwen-Max 在 MMLU 上得分 83.2%。Llama 3.1-405B 略高于 Qwen-Max。"}
+{"question": "Agentic RAG 系统中知识图谱模块包含哪几个核心组件？", "answer": "知识图谱模块包含四个核心组件：GraphStore（图数据存储与操作，基于NetworkX）、GraphBuilder（从文档自动抽取实体关系建图）、GraphRetriever（图谱检索与多跳路径推理）、KGIntentAnalyzer（问题类型分析与路由决策）。"}
+{"question": "知识图谱检索的实体链接过程包含哪些步骤？", "answer": "实体链接过程包含三个步骤：1）优先精确名称匹配，在GraphStore中直接查找实体名称；2）次选别名匹配，通过实体的别名列表进行匹配；3）兜底语义相似度匹配，使用Embedding计算向量相似度来定位实体节点。"}
+{"question": "在 Agentic RAG 中，文档分块的大小是多少？用什么算法？", "answer": "文档分块使用 RecursiveCharacterTextSplitter 算法，chunk_size=500字符，chunk_overlap=100字符。分隔符优先级为：双换行 → 单换行 → 句号 → 点号 → 空格。"}
+{"question": "HyDE 检索的工作流程是什么？它解决了什么问题？", "answer": "HyDE检索的工作流程：1）LLM根据用户问题生成一篇理想答案文档；2）将该理想文档向量化；3）用理想文档的向量在向量库中检索。它解决了语义鸿沟问题——用户问的是问题，文档存储的是答案，两者处于不同的语义空间，HyDE通过生成中间表示来桥接这个差异。"}
+{"question": "BM25 检索和语义检索各自擅长什么类型的查询？", "answer": "BM25基于词频-逆文档频率的关键词匹配，擅长精确术语查找、专有名词匹配；语义检索基于向量相似度，擅长同义词、近义表达和语义层面的相似性匹配。两者互补：BM25精确但不理解语义，语义检索理解语义但对专有名词不太敏感。"}
+{"question": "Agentic RAG 的 Fan-out/Fan-in 并行模式是如何工作的？", "answer": "Fan-out/Fan-in 并行模式使用LangGraph的Send API实现：retrieve节点执行后，conditionEdges函数根据enable_xxx开关动态决定向哪些并行检索节点发送任务。所有启用的检索策略（BM25、HyDE、Multi-Query、KG）同时并行执行，完成后在merge_retrieval节点集中收敛（fan-in），合并去重所有结果。关闭的节点完全不消耗计算资源。"}
+{"question": "什么是幻觉检测？Agentic RAG 如何处理检测到的幻觉？", "answer": "幻觉检测是指系统自动判断生成的答案中的信息是否都能在提供的检索文档中找到依据。在check_hallucination节点中，LLM判断答案中每个声明的忠实度。如果检测到幻觉，系统触发重新生成，最多重试3次。同时可能触发查询重写以获得更好的检索结果。"}
+{"question": "小象科技在哪些行业提供解决方案？具体包含哪些功能？", "answer": "小象科技在三个行业提供解决方案：1）金融行业：基于NLP的合同审查和实时交易异常检测，用户画像构建和精准营销；2）零售行业：需求预测和库存智能调度，线上线下会员数据统一分析；3）制造业：工业物联网设备数据采集和故障预测，基于视觉AI的产线缺陷检测。"}
+{"question": "什么是数据血缘追踪？它包含哪几种级别的血缘？", "answer": "数据血缘追踪（Data Lineage）记录数据从源头到消费端的完整流转路径。包含三种级别：1）列级血缘，追踪字段级别的转换逻辑；2）表级血缘，追踪表与表之间的依赖关系；3）任务级血缘，追踪调度任务之间的依赖关系。数据血缘在数据治理、影响分析和合规审计中扮演关键角色。"}
+{"question": "Lambda 架构和 Kappa 架构有什么区别？", "answer": "Lambda架构包含三层：批处理层（处理全量数据）、速度层（实时处理增量）、服务层（合并视图）。Kappa架构是Lambda的简化版本，去除了批处理层，所有处理都在流处理引擎中完成，需要重新计算时通过重放消息队列实现。Kappa架构减少了系统复杂性，适合流处理为默认模式的现代系统。"}
+{"question": "StarRocks 数据库是什么类型的？由谁提供？", "answer": "StarRocks 是一种 OLAP MPP 类型的数据库，核心特性包括极速多维分析、向量化引擎和物化视图。它作为小象科技的技术合作伙伴之一提供，被纳入其技术合作生态。"}
+{"question": "Apache Kafka 和 Apache Pulsar 在架构上最主要区别是什么？", "answer": "Apache Kafka 是分布式消息系统的行业标准，采用计算与存储耦合的架构。Apache Pulsar 是新一代消息系统，它在计算与存储分离架构上相比Kafka有优势，将存储层（BookKeeper）和计算层（Broker）分离，可以独立扩展。"}
+{"question": "小象科技获得过哪些融资？分别在什么时间？", "answer": "小象科技获得过三轮主要融资：1）2019年3月，获红杉资本天使轮融资；2）2021年12月，获经纬创投A轮融资5000万美元；3）2023年8月，获高瓴资本B轮融资2亿美元。2025年1月，公司估值突破30亿美元。"}
+{"question": "UniChat 有哪些核心功能？它由谁负责商业落地？", "answer": "UniChat 的核心功能包括：多模型路由（智能调度GPT-4、Claude、Qwen等大模型）、知识库管理（文档上传、自动分块、向量化和语义检索）、Agent编排（可视化配置多步骤Agent工作流）、对话分析（用户意图分析、满意度评估、知识缺口发现）。它由产品副总裁王芳负责商业落地。"}
+{"question": "Agentic RAG 项目使用了哪些核心技术栈？", "answer": "Agentic RAG项目使用以下核心技术栈：LLM用阿里百炼qwen-plus，Embedding用text-embedding-v3，向量存储用ChromaDB（PersistentClient本地持久化），知识图谱用NetworkX+JSON，Agent框架用LangGraph StateGraph，Web框架用FastAPI，前端用Vue 3+TypeScript，包管理器用UV（Python 3.12.13）。"}
+{"question": "vLLM 是什么？它使用了什么核心技术？", "answer": "vLLM 是由UC Berkeley开发的高性能推理引擎，专为大语言模型推理优化。它使用了PagedAttention技术实现显存高效管理，通过类似操作系统虚拟内存分页的方式管理KV缓存，大幅提升推理吞吐量，GPU利用率极高。"}
+{"question": "LangChain 和 LangGraph 是什么关系？各有什么用途？", "answer": "LangChain是LLM应用开发的基础框架，提供链式组合（Chains）、工具调用、检索模块和Agent模块等功能。LangGraph是LangChain团队推出的状态图框架，专门用于构建复杂的多步骤Agent工作流，支持StateGraph基于状态机的有向图编排、条件边动态路由和Send API的fan-out/fan-in并行执行。本项目基于LangGraph构建Agent工作流。"}
+{"question": "RAGAS 评估框架能评估哪些 RAG 指标？", "answer": "RAGAS是专为RAG设计的评估框架，能够评估以下指标：忠实度（Faithfulness，答案是否忠实于检索文档）、答案相关性（Answer Relevance）、上下文召回率（Context Recall）、上下文精确率（Context Precision）等多个维度的RAG质量指标。"}
+{"question": "在 Agentic RAG 中，enable_kg 开关的作用是什么？关闭后系统如何工作？", "answer": "enable_kg开关控制是否启用知识图谱检索。开启时，analyze_kg_intent节点会分析用户问题是否适合用KG回答，如果适合则并行触发kg_retrieve检索。关闭后系统完全不触发KG路径，analyze_kg_intent节点标记为disabled状态，直接走原有语义检索流程，零额外开销。"}
+{"question": "NexusML 和 XCloud 两个产品之间有什么关系？", "answer": "NexusML和XCloud都是小象科技旗下的核心产品，两者同属一个产品矩阵。XCloud是旗舰数据管理与分析平台，NexusML是机器学习开发与部署平台。两个产品可以协同工作：XCloud中的数据可以导入NexusML进行模型训练，NexusML的分析结果可以在XCloud的BI可视化中展示。"}
+{"question": "如果文档检索结果全部不相关，Agentic RAG 系统会如何降级处理？", "answer": "当grade_documents节点判定所有文档都不相关时，系统有两种降级策略：1）如果enable_web_search开启，触发web_search节点通过DuckDuckGo搜索互联网；2）如果enable_transform_query开启，触发transform_query节点让LLM优化查询语句后重新检索。这两种策略确保系统即使本地知识不足也能尽力回答用户问题。"}
+{"question": "Multi-Query 检索策略是如何工作的？举一个具体例子说明。", "answer": "Multi-Query检索策略让LLM从多个角度自动改写用户查询，生成3-5个不同视角的子查询，每个子查询独立检索并合并结果。例如用户问「如何优化Python代码性能」，可能生成子查询：「Python代码性能优化方法」、「Python多线程和异步编程」、「Python内存管理和垃圾回收」。不同子查询覆盖问题不同侧面，最终合并结果提高检索覆盖面。"}
+{"question": "知识图谱的意图分析节点在什么情况下标记 kg_intent=False？", "answer": "知识图谱意图分析节点在三种情况下标记kg_intent=False：1）enable_kg=False，开关被用户关闭；2）知识图谱为空（没有实体和关系）；3）LLM分析后判定问题类型不适合KG（如简单定义、操作教程、个人观点类问题）。这种多重降级保护确保系统在KG不可用时平滑回退。"}
+{"question": "小象科技的创始团队成员中，谁曾经在腾讯 AI Lab 工作过？", "answer": "小象科技的CTO张小伟曾经在腾讯AI Lab工作过，他在加入小象科技之前是腾讯AI Lab的研究员。张小伟还拥有斯坦福大学的博士后学历，专长机器学习与自然语言处理。"}
+{"question": "ChromaDB、Milvus 和 Qdrant 三个向量数据库各有什么特点？", "answer": "ChromaDB是轻量级开源向量数据库，支持本地持久化和客户端-服务器两种模式，内置多种Embedding函数。Milvus是云原生分布式向量数据库，支持GPU索引，适合大规模生产环境。Qdrant使用Rust实现，提供高性能过滤能力。三者定位不同：ChromaDB适合轻量本地开发，Milvus适合大规模分布式部署，Qdrant适合需要高性能过滤的场景。"}
+{"question": "Agentic RAG 系统中的重排序和文档相关性评估有什么区别？", "answer": "重排序（rerank_documents）是对所有候选文档进行Cross-Encoder打分后重新排序，按相似度高低排列；文档相关性评估（grade_documents）是LLM对每篇文档做二元判断（相关/不相关），如果全部不相关则触发降级策略。重排序侧重于精排排序，文档评估侧重于质量过滤和降级决策。"}
+{"question": "Neo4j 与 NetworkX 在知识图谱存储方面有什么不同？本项目为什么选择 NetworkX？", "answer": "Neo4j是专业的图数据库，需要独立的服务器进程运行，使用Cypher查询语言，支持生产级规模和并发。NetworkX是Python内存图库，纯本地运行无需外部服务，使用图算法API操作。本项目选择NetworkX的原因是不使用Docker和外部数据库服务，要求纯本地运行，NetworkX的轻量级特性和JSON持久化完全满足需求。"}
+{"question": "小象科技在2023年发布了哪些产品？", "answer": "小象科技在2023年发布了两个产品：1）2023年2月，DataMesh正式发布，开创了数据网格商业化的先河；2）2023年8月，UniChat上线，这是一个企业级智能对话与知识管理平台，同期获得了高瓴资本B轮融资2亿美元。"}
+{"question": "开源 AI 工具链领域有哪些主流的模型量化技术？它们之间有什么区别？", "answer": "主流模型量化技术包括：1）GPTQ，基于训练后量化的方法，适合GPU部署；2）AWQ（Activation-aware Weight Quantization），通过保留重要通道精度，效果优于GPTQ；3）GGUF，llama.cpp使用的格式，适合CPU推理，支持各种量化级别；4）bitsandbytes，与HuggingFace集成，支持8bit/4bit量化。它们的区别在于部署平台和精度保留策略不同。"}
+{"question": "在 Agentic RAG 中，如何控制 token 消耗成本？", "answer": "通过三种策略控制成本：1）分级模型使用，轻量模型（qwen-turbo）用于简单任务如实体抽取，重量模型（qwen-plus）用于复杂任务如答案生成；2）按需调用LLM，不需要时（如节点被开关关闭）不调用；3）缓存策略，Embedding缓存避免重复向量化，查询缓存可快速返回相同问题的结果。"}
+{"question": "小象科技的总部在哪里？它有哪些云合作伙伴？", "answer": "小象科技的总部位于北京市海淀区中关村科技园。它的云合作伙伴包括：阿里云、AWS和腾讯云三家主流云服务商。"}

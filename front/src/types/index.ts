@@ -17,6 +17,13 @@ export interface ChatRequest {
 export interface AgenticChatRequest extends ChatRequest {
   enable_web_search?: boolean
   enable_reflection?: boolean
+  enable_rerank?: boolean
+  enable_grade_documents?: boolean
+  enable_transform_query?: boolean
+  enable_bm25?: boolean
+  enable_hyde?: boolean
+  enable_multi_query?: boolean
+  enable_kg?: boolean
   stream?: boolean
 }
 

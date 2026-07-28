@@ -128,6 +128,9 @@ class RAGService:
             "documents_bm25": [],
             "documents_hyde": [],
             "documents_multi_query": [],
+            "enable_kg": request.enable_kg,
+            "kg_intent": False,
+            "kg_context": "",
         }
 
         # 运行 Agent 图
@@ -199,6 +202,9 @@ class RAGService:
             "documents_bm25": [],
             "documents_hyde": [],
             "documents_multi_query": [],
+            "enable_kg": request.enable_kg,
+            "kg_intent": False,
+            "kg_context": "",
         }
 
         # 使用 astream_events 获取节点的开始/完成事件（on_chain_start/on_chain_end）
@@ -208,6 +214,7 @@ class RAGService:
             "retrieve", "rerank_documents", "grade_documents",
             "web_search", "transform_query", "tools",
             "bm25_retrieve", "hyde_retrieve", "multi_query_retrieve", "merge_retrieval",
+            "analyze_kg_intent", "kg_retrieve",
         }
         logger.info("[stream_rag] 开始执行 Agent 状态图（逐步模式）...")
         async for evt in agent_graph.astream_events(initial_state, config, version="v2"):

@@ -28,6 +28,7 @@ from src.store.vector_store import vector_store
 from src.retrieval.bm25 import bm25_retriever
 from src.memory.manager import memory_manager
 from src.config.settings import settings
+from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
 
 logger = logging.getLogger(__name__)
 
@@ -458,25 +459,124 @@ def multi_query_retrieve_node(state: AgentState) -> dict[str, Any]:
 def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
     """检索结果合并节点
 
-    从四个来源合并文档并去重：
+    从多个来源合并文档并去重：
     1. documents（基础向量+MMR 检索）
     2. documents_bm25（BM25 检索，仅当 enable_bm25=True 时有值）
     3. documents_hyde（HyDE 检索，仅当 enable_hyde=True 时有值）
     4. documents_multi_query（Multi-Query 检索，仅当 enable_multi_query=True 时有值）
+    5. kg_context（知识图谱检索结果，作为特殊 Document 附加）
     """
     base = state.get("documents", [])
     bm25 = state.get("documents_bm25", [])
     hyde = state.get("documents_hyde", [])
     multi = state.get("documents_multi_query", [])
+    kg_context = state.get("kg_context", "")
 
     merged = _merge_documents(base, bm25, hyde, multi)
 
+    # 将 KG 上下文作为特殊 Document 附加（标记来源）
+    if kg_context:
+        from langchain_core.documents import Document
+        kg_doc = Document(
+            page_content=kg_context,
+            metadata={
+                "source": "knowledge_graph",
+                "filename": "知识图谱",
+            },
+        )
+        merged.insert(0, kg_doc)  # 放最前面，让 LLM 优先参考
+        logger.info("KG 上下文已附加到文档列表 (%d 字符)", len(kg_context))
+
     logger.info(
-        "合并检索结果: base=%d, bm25=%d, hyde=%d, multi=%d → merged=%d",
-        len(base), len(bm25), len(hyde), len(multi), len(merged),
+        "合并检索结果: base=%d, bm25=%d, hyde=%d, multi=%d, kg=%s → merged=%d",
+        len(base), len(bm25), len(hyde), len(multi),
+        "yes" if kg_context else "no", len(merged),
     )
 
     return {
         "documents": merged,
         "agent_path": ["merge_retrieval"],
     }
+
+
+# ==================== 知识图谱检索节点 ====================
+
+
+def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
+    """知识图谱意图分析节点
+
+    在检索之前执行，分析用户问题是否适合用知识图谱回答。
+    只有当 enable_kg=True 且图谱非空时才会被调用。
+
+    设置 kg_intent 标志：
+        - True → 后续会触发 kg_retrieve 并行检索
+        - False → 降级，只走原有检索流程
+    """
+    enable_kg = state.get("enable_kg", False)
+    query = state["query"]
+
+    if not enable_kg:
+        logger.info("KG 意图分析: 已禁用, kg_intent=False")
+        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (disabled)"]}
+
+    store = get_graph_store()
+    if store.is_empty():
+        logger.info("KG 意图分析: 图谱为空, kg_intent=False")
+        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (empty kg)"]}
+
+    try:
+        analyzer = get_kg_intent_analyzer()
+        should_use = analyzer.analyze(query)
+        logger.info("KG 意图分析结果: %s", "SHOULD_USE_KG" if should_use else "SHOULD_NOT_USE_KG")
+        return {
+            "kg_intent": should_use,
+            "agent_path": ["analyze_kg_intent"],
+        }
+    except Exception as e:
+        logger.warning("KG 意图分析异常，默认降级: %s", e)
+        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (error)"]}
+
+
+def kg_retrieve_node(state: AgentState) -> dict[str, Any]:
+    """知识图谱检索节点
+
+    通过条件边 Send 调度，只有 enable_kg=True AND kg_intent=True 时才会被调用。
+
+    流程:
+        1. 从 query 抽取实体
+        2. Entity Linking 定位种子节点
+        3. BFS 子图提取
+        4. 多跳路径推理
+        5. 生成结构化上下文文本 → 写入 kg_context
+
+    kg_context 在 merge_retrieval 中作为特殊 Document 附加到 documents 列表。
+    """
+    query = state.get("rewritten_query") or state["query"]
+    logger.info("KG 检索节点: query='%s'", query[:100])
+
+    try:
+        store = get_graph_store()
+        retriever = get_graph_retriever()
+        context, entities = retriever.search(query, store)
+
+        if not context:
+            logger.info("KG 检索无结果")
+            return {
+                "kg_context": "",
+                "agent_path": ["kg_retrieve (no results)"],
+            }
+
+        logger.info("KG 检索完成: %d 实体, %d 字符",
+                     len(entities), len(context))
+
+        return {
+            "kg_context": context,
+            "agent_path": ["kg_retrieve"],
+        }
+
+    except Exception as e:
+        logger.warning("KG 检索异常: %s", e)
+        return {
+            "kg_context": "",
+            "agent_path": ["kg_retrieve (error)"],
+        }

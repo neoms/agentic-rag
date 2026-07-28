@@ -274,6 +274,7 @@ export function useChat() {
         enable_bm25: flow.enableBm25.value,
         enable_hyde: flow.enableHyde.value,
         enable_multi_query: flow.enableMultiQuery.value,
+        enable_kg: flow.enableKg.value,
         stream: true,
       })
 

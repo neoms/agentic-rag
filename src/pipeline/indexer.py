@@ -6,6 +6,7 @@ from pathlib import Path
 from src.pipeline.loader import load_document
 from src.pipeline.chunker import chunk_texts
 from src.store.vector_store import vector_store
+from src.knowledge_graph import get_graph_store, get_graph_builder
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,16 @@ class DocumentIndexer:
         # Step 3: 向量化入库
         logger.info("开始入库: %s (%d 个文档块)", filename, len(documents))
         count = vector_store.add_documents(documents)
+
+        # Step 4: 构建知识图谱
+        try:
+            logger.info("开始构建知识图谱: %s", filename)
+            store = get_graph_store()
+            builder = get_graph_builder()
+            builder.build_from_chunks(documents, doc_id, store)
+            logger.info("知识图谱构建完成: %s", filename)
+        except Exception as e:
+            logger.warning("知识图谱构建失败（不影响向量检索）: %s", e)
 
         logger.info("文档 %s 处理完成: doc_id=%s, chunks=%d", filename, doc_id, count)
         return {

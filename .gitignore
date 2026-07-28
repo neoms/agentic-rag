@@ -26,6 +26,9 @@ Thumbs.db
 # ChromaDB 持久化目录
 chroma_data/
 
+# KG 持久化目录
+kg_data/
+
 # UV
 *.lock.cache/
 

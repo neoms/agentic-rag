@@ -20,6 +20,7 @@ class AgenticChatRequest(ChatRequest):
     enable_bm25: bool = False
     enable_hyde: bool = False
     enable_multi_query: bool = False
+    enable_kg: bool = False  # 知识图谱检索
     stream: bool = False
 
 

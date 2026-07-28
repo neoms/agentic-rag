@@ -31,6 +31,8 @@ from src.agent.nodes import (
     hyde_retrieve_node,
     multi_query_retrieve_node,
     merge_retrieval_node,
+    analyze_kg_intent_node,
+    kg_retrieve_node,
 )
 from src.config.settings import settings
 
@@ -103,6 +105,7 @@ def route_retrieval_strategies(
 
     只有 enable_xxx=True 的节点才会被 Send 调度执行，
     关闭的节点完全不被调用（零开销）。
+    KG 检索只有在 enable_kg=True AND kg_intent=True 时才触发。
     全部关闭时直达 merge_retrieval。
     """
     sends: list[Send] = []
@@ -112,15 +115,18 @@ def route_retrieval_strategies(
         sends.append(Send("hyde_retrieve", state))
     if state.get("enable_multi_query", False):
         sends.append(Send("multi_query_retrieve", state))
+    if state.get("enable_kg", False) and state.get("kg_intent", False):
+        sends.append(Send("kg_retrieve", state))
 
     if not sends:
         sends.append(Send("merge_retrieval", state))
 
     logger.info(
-        "检索策略路由: bm25=%s, hyde=%s, multi_query=%s → %d 个 Send",
+        "检索策略路由: bm25=%s, hyde=%s, multi_query=%s, kg=%s → %d 个 Send",
         state.get("enable_bm25", False),
         state.get("enable_hyde", False),
         state.get("enable_multi_query", False),
+        state.get("enable_kg", False) and state.get("kg_intent", False),
         len(sends),
     )
     return sends
@@ -183,10 +189,12 @@ def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
 
     # 添加节点
+    workflow.add_node("analyze_kg_intent", analyze_kg_intent_node)
     workflow.add_node("retrieve", retrieve)
     workflow.add_node("bm25_retrieve", bm25_retrieve_node)
     workflow.add_node("hyde_retrieve", hyde_retrieve_node)
     workflow.add_node("multi_query_retrieve", multi_query_retrieve_node)
+    workflow.add_node("kg_retrieve", kg_retrieve_node)
     workflow.add_node("merge_retrieval", merge_retrieval_node)
     workflow.add_node("rerank_documents", rerank_documents_node)
     workflow.add_node("grade_documents", grade_documents)
@@ -196,8 +204,11 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("check_hallucination", check_hallucination)
     workflow.add_node("tools", tool_node)
 
-    # 设置入口
-    workflow.set_entry_point("retrieve")
+    # 设置入口: KG 意图分析 → 语义检索
+    workflow.set_entry_point("analyze_kg_intent")
+
+    # analyze_kg_intent → retrieve（无论是否启用 KG 都执行语义检索）
+    workflow.add_edge("analyze_kg_intent", "retrieve")
 
     # retrieve 后的条件边：fan-out 到启用的检索策略（或直达 merge）
     workflow.add_conditional_edges(
@@ -207,6 +218,7 @@ def build_agent_graph() -> StateGraph:
             "bm25_retrieve",
             "hyde_retrieve",
             "multi_query_retrieve",
+            "kg_retrieve",
             "merge_retrieval",
         ],
     )
@@ -215,6 +227,7 @@ def build_agent_graph() -> StateGraph:
     workflow.add_edge("bm25_retrieve", "merge_retrieval")
     workflow.add_edge("hyde_retrieve", "merge_retrieval")
     workflow.add_edge("multi_query_retrieve", "merge_retrieval")
+    workflow.add_edge("kg_retrieve", "merge_retrieval")
 
     # merge 后的条件边：根据开关走 rerank / grade / generate
     workflow.add_conditional_edges(

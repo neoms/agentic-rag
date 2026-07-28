@@ -10,26 +10,29 @@ const navItems = [
 ]
 
 // ── SVG 节点布局 ──
-// START → 4 路并行检索 → merge → [可选节点带 bypass] → END
-// viewBox 0 0 320 470
+// START → analyze_kg_intent → retrieve → 5 路并行检索 → merge → [可选节点带 bypass] → END
+// viewBox 0 0 380 500
 interface N { id: string; label: string; x: number; y: number; w: number; h: number }
 const NODES: N[] = [
+  // START
+  // analyze_kg_intent
   // 并行检索行（同级同行）
-  { id: 'retrieve',             label: '语义检索',   x: 8,  y: 52, w: 60, h: 25 },
-  { id: 'bm25_retrieve',        label: 'BM25',       x: 86, y: 52, w: 60, h: 25 },
-  { id: 'hyde_retrieve',        label: 'HyDE',       x: 164,y: 52, w: 60, h: 25 },
-  { id: 'multi_query_retrieve', label: '多角度查询',  x: 242,y: 52, w: 60, h: 25 },
+  { id: 'retrieve',             label: '语义检索',   x: 8,  y: 82, w: 60, h: 25 },
+  { id: 'bm25_retrieve',        label: 'BM25',       x: 80, y: 82, w: 52, h: 25 },
+  { id: 'hyde_retrieve',        label: 'HyDE',       x: 144,y: 82, w: 52, h: 25 },
+  { id: 'multi_query_retrieve', label: '多角度查询',  x: 208,y: 82, w: 68, h: 25 },
+  { id: 'kg_retrieve',          label: '图谱检索',   x: 288,y: 82, w: 68, h: 25 },
   // 合并
-  { id: 'merge_retrieval',      label: '合并去重',   x: 125,y: 97, w: 60, h: 25 },
+  { id: 'merge_retrieval',      label: '合并去重',   x: 155,y: 127,w: 60, h: 25 },
   // 可选节点（主链，可被 bypass）
-  { id: 'rerank_documents',     label: '重排序',     x: 125,y: 142,w: 60, h: 25 },
-  { id: 'grade_documents',      label: '文档评估',   x: 125,y: 187,w: 60, h: 25 },
+  { id: 'rerank_documents',     label: '重排序',     x: 155,y: 172,w: 60, h: 25 },
+  { id: 'grade_documents',      label: '文档评估',   x: 155,y: 217,w: 60, h: 25 },
   // 分支节点
-  { id: 'transform_query',      label: '查询重写',   x: 8,  y: 225,w: 60, h: 25 },
-  { id: 'web_search',           label: '联网搜索',   x: 222,y: 225,w: 60, h: 25 },
+  { id: 'transform_query',      label: '查询重写',   x: 8,  y: 255,w: 60, h: 25 },
+  { id: 'web_search',           label: '联网搜索',   x: 252,y: 255,w: 60, h: 25 },
   // 固定节点
-  { id: 'generate',             label: '生成回答',   x: 125,y: 262,w: 60, h: 25 },
-  { id: 'check_hallucination',  label: '幻觉检测',   x: 125,y: 312,w: 60, h: 25 },
+  { id: 'generate',             label: '生成回答',   x: 155,y: 292,w: 60, h: 25 },
+  { id: 'check_hallucination',  label: '幻觉检测',   x: 155,y: 342,w: 60, h: 25 },
 ]
 const byId = (id: string): N => NODES.find(n => n.id === id)!
 
@@ -38,6 +41,7 @@ const ENABLED: Record<string, keyof typeof flow> = {
   bm25_retrieve: 'enableBm25',
   hyde_retrieve: 'enableHyde',
   multi_query_retrieve: 'enableMultiQuery',
+  kg_retrieve: 'enableKg',
   rerank_documents: 'enableRerank',
   grade_documents: 'enableGradeDocuments',
   web_search: 'enableWebSearch',
@@ -104,7 +108,7 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
         <span class="text-[10px] font-medium text-slate-500">Agent 流程</span>
       </div>
 
-      <svg viewBox="0 0 320 470" class="w-full" style="max-height: 470px">
+      <svg viewBox="0 0 380 500" class="w-full" style="max-height: 500px">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
@@ -118,6 +122,9 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
           <marker id="arrIndigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
           </marker>
+          <marker id="arrOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f97316"/>
+          </marker>
           <filter id="gl">
             <feGaussianBlur stdDeviation="2.5" result="b"/>
             <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -125,29 +132,44 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
         </defs>
 
         <!-- ═══ START 节点 ═══ -->
-        <rect x="130" y="5" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-        <text x="160" y="17" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">START</text>
+        <rect x="150" y="5" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+        <text x="180" y="17" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">START</text>
 
-        <!-- ═══ START → 四路检索（扇出） ═══ -->
+        <!-- ═══ analyze_kg_intent 节点 ═══ -->
+        <rect x="145" y="36" width="70" height="26" rx="4" ry="4"
+          :fill="FILL[state('analyze_kg_intent')]"
+          :stroke="STROKE[state('analyze_kg_intent')]"
+          :stroke-width="state('analyze_kg_intent') === 'active' ? 2 : 1"
+          :filter="state('analyze_kg_intent') === 'active' ? 'url(#gl)' : ''"
+          :style="state('analyze_kg_intent') === 'active' ? 'animation: pulse 1.4s ease-in-out infinite' : ''"/>
+        <text x="180" y="49" text-anchor="middle" dominant-baseline="central"
+          :fill="TEXT[state('analyze_kg_intent')]"
+          class="text-[10px]">意图分析</text>
+
+        <!-- ═══ START → analyze_kg_intent → 五路检索（扇出） ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
-          <line x1="160" y1="27" x2="160" y2="30"/>
-          <line x1="44" y1="30" x2="278" y2="30"/>
-          <line x1="44" y1="30" x2="44" :y2="byId('retrieve').y" marker-end="url(#arr)"/>
-          <line x1="122"y1="30" x2="122":y2="byId('bm25_retrieve').y" marker-end="url(#arrCyan)"/>
-          <line x1="200"y1="30" x2="200":y2="byId('hyde_retrieve').y" marker-end="url(#arrPink)"/>
-          <line x1="278"y1="30" x2="278":y2="byId('multi_query_retrieve').y" marker-end="url(#arrIndigo)"/>
+          <line x1="180" y1="27" x2="180" y2="36" marker-end="url(#arr)"/>
+          <line x1="180" y1="62" x2="180" y2="68"/>
+          <line x1="44" y1="68" x2="322" y2="68"/>
+          <line x1="44" y1="68" x2="44" :y2="byId('retrieve').y" marker-end="url(#arr)"/>
+          <line x1="112"y1="68" x2="112":y2="byId('bm25_retrieve').y" marker-end="url(#arrCyan)"/>
+          <line x1="176"y1="68" x2="176":y2="byId('hyde_retrieve').y" marker-end="url(#arrPink)"/>
+          <line x1="248"y1="68" x2="248":y2="byId('multi_query_retrieve').y" marker-end="url(#arrIndigo)"/>
+          <line x1="322"y1="68" x2="322":y2="byId('kg_retrieve').y" marker-end="url(#arrOrange)"/>
         </g>
 
-        <!-- ═══ 四路检索 → merge 收敛 ═══ -->
+        <!-- ═══ 五路检索 → merge 收敛 ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
-          <line :x1="byId('retrieve').x+byId('retrieve').w/2" :y1="byId('retrieve').y+25"
-                :x2="byId('merge_retrieval').x+18"             :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
-          <line :x1="byId('bm25_retrieve').x+byId('bm25_retrieve').w/2" :y1="byId('bm25_retrieve').y+25"
-                :x2="byId('merge_retrieval').x+28"                     :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
-          <line :x1="byId('hyde_retrieve').x+byId('hyde_retrieve').w/2" :y1="byId('hyde_retrieve').y+25"
-                :x2="byId('merge_retrieval').x+42"                     :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
-          <line :x1="byId('multi_query_retrieve').x+byId('multi_query_retrieve').w/2" :y1="byId('multi_query_retrieve').y+25"
-                :x2="byId('merge_retrieval').x+52"                                 :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('retrieve').x+30" :y1="byId('retrieve').y+25"
+                :x2="byId('merge_retrieval').x+10" :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('bm25_retrieve').x+26" :y1="byId('bm25_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+20" :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('hyde_retrieve').x+26" :y1="byId('hyde_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+30" :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('multi_query_retrieve').x+34" :y1="byId('multi_query_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+40" :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
+          <line :x1="byId('kg_retrieve').x+34" :y1="byId('kg_retrieve').y+25"
+                :x2="byId('merge_retrieval').x+50" :y2="byId('merge_retrieval').y" marker-end="url(#arr)"/>
         </g>
 
         <!-- ═══ 主链箭头 merge → rerank → grade → generate → check → END ═══ -->
@@ -177,7 +199,7 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
         <path :d="`M ${byId('rerank_documents').x+byId('rerank_documents').w} ${byId('rerank_documents').y+12} C ${byId('rerank_documents').x+byId('rerank_documents').w+20} ${byId('rerank_documents').y+12}, ${byId('generate').x+byId('generate').w+20} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w} ${byId('generate').y+12}`"
               fill="none" :stroke="bypassColor('grade_documents')" stroke-width="1.2" stroke-dasharray="4 3"
               :opacity="bypassOpacity('grade_documents')" marker-end="url(#arr)"/>
-        <path :d="`M ${byId('generate').x+byId('generate').w} ${byId('generate').y+12} C ${byId('generate').x+byId('generate').w+25} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w+25} 365, 185 387`"
+        <path :d="`M ${byId('generate').x+byId('generate').w} ${byId('generate').y+12} C ${byId('generate').x+byId('generate').w+25} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w+25} 395, 215 420`"
               fill="none" :stroke="bypassColor('check_hallucination')" stroke-width="1.2" stroke-dasharray="4 3"
               :opacity="bypassOpacity('check_hallucination')" marker-end="url(#arr)"/>
 
@@ -209,7 +231,7 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
 
         <!-- ═══ 回环曲线 ═══ -->
         <!-- transform_query → retrieve（循环） -->
-        <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+25} C ${byId('transform_query').x} ${byId('transform_query').y+32}, -5 ${byId('transform_query').y+10}, -5 145 C -5 68, 8 64, 8 64`"
+        <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+25} C ${byId('transform_query').x} ${byId('transform_query').y+32}, -5 ${byId('transform_query').y+10}, -5 155 C -5 98, 8 94, 8 94`"
               fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arr)"/>
         <!-- check_hallucination → generate（幻觉重试） -->
         <path :d="`M ${byId('check_hallucination').x+byId('check_hallucination').w} ${byId('check_hallucination').y+12} C ${byId('check_hallucination').x+byId('check_hallucination').w+12} ${byId('check_hallucination').y+12}, ${byId('check_hallucination').x+byId('check_hallucination').w+12} ${byId('generate').y+12}, ${byId('generate').x+byId('generate').w} ${byId('generate').y+12}`"
@@ -229,13 +251,13 @@ function mainEdgeOpacity(id: string): number { return enabled(id) ? 1 : 0.15 }
               class="text-[9px] fill-red-400/80">重试</text>
 
         <!-- ═══ END 节点 ═══ -->
-        <rect x="130" y="375" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-        <text x="160" y="387" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">END</text>
+        <rect x="150" y="415" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+        <text x="180" y="427" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">END</text>
 
         <!-- ═══ check → END ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <line :x1="byId('check_hallucination').x+byId('check_hallucination').w/2" :y1="byId('check_hallucination').y+25"
-                x2="160" y2="375" marker-end="url(#arr)"/>
+                x2="180" y2="415" marker-end="url(#arr)"/>
           <text :x="byId('generate').x+byId('generate').w+4" :y="byId('generate').y+16"
                 class="text-[9px] fill-slate-500">关</text>
         </g>

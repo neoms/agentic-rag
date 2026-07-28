@@ -17,6 +17,7 @@ dependencies = [
     "langgraph>=1.2.9",
     "langsmith>=0.10.6",
     "markdown>=3.10.2",
+    "networkx>=3.5,<4",
     "pydantic-settings>=2.14.2",
     "pypdf2>=3.0.1",
     "python-dotenv>=1.2.2",

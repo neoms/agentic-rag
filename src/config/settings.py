@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # ========== Multi-Query 多角度查询 ==========
     multi_query_num_variations: int = 3  # 生成的查询变体数量
 
+    # ========== 知识图谱 ==========
+    kg_data_dir: str = "kg_data"
+    kg_max_hops: int = 2           # 子图提取最大跳数
+    kg_max_entities: int = 10      # 单次查询最多提取实体数
+
     # ========== 服务 ==========
     app_host: str = "0.0.0.0"
     app_port: int = 8000

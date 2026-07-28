@@ -2,6 +2,8 @@
 
 使用方法:
     uv run python eval/run_eval.py --version v1
+    uv run python eval/run_eval.py --version v2 --enable-kg
+    uv run python eval/run_eval.py --version v2 --enable-kg --enable-multi-query
 
 目录结构:
     eval/
@@ -9,6 +11,10 @@
     │   ├── sample_docs/             # 测试文档
     │   ├── dataset.jsonl            # 测试数据集（Q&A）
     │   └── results/                 # 评估结果（自动下载保存）
+    ├── v2/                          # v2 版本（含知识图谱评估）
+    │   ├── sample_docs/
+    │   ├── dataset.jsonl
+    │   └── results/
     └── run_eval.py                  # 本脚本
 
 评估指标（8 个）：
@@ -138,6 +144,10 @@ def create_langsmith_dataset(version: str, examples: list[dict]) -> str:
 # ============================================================
 
 
+# 可通过命令行参数覆盖的全局评估配置
+_eval_config: dict = {}
+
+
 def target_fn(inputs: dict) -> dict:
     """评估目标函数 — 调用 Agentic RAG，记录延迟"""
     question = inputs["question"]
@@ -149,6 +159,10 @@ def target_fn(inputs: dict) -> dict:
         stream=False,
         enable_web_search=False,
         enable_reflection=True,
+        enable_kg=_eval_config.get("enable_kg", False),
+        enable_multi_query=_eval_config.get("enable_multi_query", False),
+        enable_bm25=_eval_config.get("enable_bm25", False),
+        enable_hyde=_eval_config.get("enable_hyde", False),
     )
 
     t_start = time.perf_counter()
@@ -522,14 +536,41 @@ def download_results(version: str, experiment_name: str, all_scores: list[dict[s
 
 
 def main():
+    global _eval_config
+
     parser = argparse.ArgumentParser(description="Agentic RAG LangSmith 评估流水线")
     parser.add_argument(
         "--version", "-v",
         required=True,
-        help="评估版本目录（如 v1），对应 eval/{version}/",
+        help="评估版本目录（如 v1, v2），对应 eval/{version}/",
+    )
+    parser.add_argument(
+        "--enable-kg",
+        action="store_true",
+        help="启用知识图谱检索",
+    )
+    parser.add_argument(
+        "--enable-multi-query",
+        action="store_true",
+        help="启用 Multi-Query 多角度检索",
+    )
+    parser.add_argument(
+        "--enable-bm25",
+        action="store_true",
+        help="启用 BM25 关键词检索",
+    )
+    parser.add_argument(
+        "--enable-hyde",
+        action="store_true",
+        help="启用 HyDE 检索",
     )
     args = parser.parse_args()
     version = args.version
+
+    _eval_config["enable_kg"] = args.enable_kg
+    _eval_config["enable_multi_query"] = args.enable_multi_query
+    _eval_config["enable_bm25"] = args.enable_bm25
+    _eval_config["enable_hyde"] = args.enable_hyde
 
     version_dir = Path(__file__).resolve().parent / version
     if not version_dir.is_dir():
@@ -537,7 +578,9 @@ def main():
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("  Agentic RAG — LangSmith 评估 (版本: %s)", version)
+    logger.info("  Agentic RAG — LangSmith 评估 (版本: %s, 策略: kg=%s mq=%s bm25=%s hyde=%s)",
+                version, _eval_config["enable_kg"], _eval_config["enable_multi_query"],
+                _eval_config["enable_bm25"], _eval_config["enable_hyde"])
     logger.info("=" * 60)
 
     # 加载数据集

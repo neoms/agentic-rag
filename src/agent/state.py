@@ -70,3 +70,8 @@ class AgentState(TypedDict):
     documents_bm25: list[Document]
     documents_hyde: list[Document]
     documents_multi_query: list[Document]
+
+    # 知识图谱检索
+    enable_kg: bool                    # 是否启用知识图谱检索
+    kg_intent: bool                    # 意图分析结果：是否需要 KG
+    kg_context: str                    # KG 检索到的结构化上下文文本
