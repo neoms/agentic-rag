@@ -175,6 +175,7 @@ def generate(state: AgentState) -> dict[str, Any]:
     query = state["query"]
     documents = state.get("documents", [])
     session_id = state.get("session_id", "default")
+    citation_metadata = state.get("citation_metadata", {})
 
     if not documents:
         return {
@@ -182,7 +183,7 @@ def generate(state: AgentState) -> dict[str, Any]:
             "agent_path": ["generate (no context)"],
         }
 
-    logger.info("生成节点: 基于 %d 个文档生成回答", len(documents))
+    logger.info("生成节点: 基于 %d 个文档, %d 个引文条目, 生成回答", len(documents), len(citation_metadata))
 
     # 使用强模型生成高质量答案
     llm = create_strong_llm(streaming=state.get("stream", False))
@@ -190,13 +191,21 @@ def generate(state: AgentState) -> dict[str, Any]:
     # 获取对话历史
     chat_history = memory_manager.get_chat_history_string(session_id)
 
-    # 格式化文档上下文
-    docs_text = "\n\n---\n\n".join(
-        f"来源: {doc.metadata.get('filename', doc.metadata.get('url', 'unknown'))}\n"
-        f"链接: {doc.metadata.get('url', '无')}\n"
-        f"内容: {doc.page_content}"
-        for doc in documents[:8]
-    )
+    # 格式化文档上下文（带段落索引）
+    import re as _re
+    doc_parts: list[str] = []
+    for doc_idx, doc in enumerate(documents[:8], 1):
+        src = doc.metadata.get("filename") or doc.metadata.get("url", "unknown")
+        url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
+        paragraphs = [p.strip() for p in _re.split(r'\n\s*\n', doc.page_content) if p.strip()]
+        if not paragraphs:
+            paragraphs = [doc.page_content]
+        para_lines = []
+        for para_idx, para in enumerate(paragraphs, 1):
+            para_lines.append(f"  [Doc{doc_idx}-Para{para_idx}] {para}")
+        doc_text = "\n\n".join(para_lines)
+        doc_parts.append(f"来源: {src}{url_info}\n内容:\n{doc_text}")
+    docs_text = "\n\n---\n\n".join(doc_parts)
 
     messages = [
         HumanMessage(content=GENERATE_ANSWER_SYSTEM),
@@ -473,6 +482,9 @@ def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
     3. documents_hyde（HyDE 检索，仅当 enable_hyde=True 时有值）
     4. documents_multi_query（Multi-Query 检索，仅当 enable_multi_query=True 时有值）
     5. kg_context（知识图谱检索结果，作为特殊 Document 附加）
+
+    citation_metadata 在 rag_service.py 构建 prompt 时同步生成，
+    以确保索引顺序与 LLM 最终看到的文档列表一致。
     """
     base = state.get("documents", [])
     bm25 = state.get("documents_bm25", [])
@@ -504,6 +516,7 @@ def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
     return {
         "documents": merged,
         "agent_path": ["merge_retrieval"],
+        "citation_metadata": {},
     }
 
 

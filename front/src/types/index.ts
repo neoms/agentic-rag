@@ -40,7 +40,7 @@ export interface ChatHistoryResponse {
 }
 
 // ===== SSE 流式事件 =====
-export type SSEEventType = 'source' | 'path' | 'token' | 'done' | 'error' | 'hallucination' | 'node_start' | 'node_step'
+export type SSEEventType = 'source' | 'citations' | 'path' | 'token' | 'done' | 'error' | 'hallucination' | 'node_start' | 'node_step'
 
 export interface SSEEvent {
   type: SSEEventType
@@ -76,6 +76,18 @@ export interface DocumentDeleteResponse {
   message: string
 }
 
+// ===== 引文标注模型 =====
+export interface CitationInfo {
+  filename: string
+  source_type: string
+  url: string
+  paragraph_text: string
+  doc_index: number
+  para_index: number
+}
+
+export type CitationMetadata = Record<string, CitationInfo>
+
 // ===== 对话 UI 模型 =====
 export interface UIMessage {
   id: string
@@ -88,4 +100,5 @@ export interface UIMessage {
   tool_calls?: Record<string, string | number | boolean>[]
   isStreaming?: boolean
   hallucination_passed?: boolean
+  citations?: CitationMetadata
 }

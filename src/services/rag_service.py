@@ -4,6 +4,7 @@ import time
 import asyncio
 import logging
 import json
+import re
 from typing import AsyncIterator
 
 from langchain_core.messages import HumanMessage
@@ -63,6 +64,7 @@ class RAGService:
             "enable_kg": request.enable_kg,
             "kg_intent": False,
             "kg_context": "",
+            "citation_metadata": {},
         }
 
         # 使用 astream_events 获取节点的开始/完成事件（on_chain_start/on_chain_end）
@@ -90,7 +92,7 @@ class RAGService:
         # 图执行完成，开始外部流式生成（generate 节点从此刻起持续活跃）
         yield StreamEvent(event="node_start", data="generate")
 
-        # 获取最终状态（含检索到的文档）— 放到线程池避免阻塞事件循环
+        # 获取最终状态（含检索到的文档和引文元数据）— 放到线程池避免阻塞事件循环
         final_state = await asyncio.to_thread(agent_graph.get_state, config)
         result = final_state.values if final_state else {}
         logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
@@ -123,23 +125,56 @@ class RAGService:
             data=json.dumps(agent_path, ensure_ascii=False),
         )
 
-        # 流式生成答案
+        # 流式生成答案（带引文标注）
         if documents:
+            # ===== 1. 构建带段落索引的文档上下文 + 同步构建 citation_metadata =====
             doc_parts: list[str] = []
-            for doc in documents:
+            citation_metadata: dict[str, dict] = {}
+            for doc_idx, doc in enumerate(documents, 1):
                 src = doc.metadata.get("url") or doc.metadata.get("filename", "unknown")
                 url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
-                doc_parts.append(f"来源: {src}{url_info}\n内容: {doc.page_content}")
+                source_type = doc.metadata.get("source", "local")
+                url = doc.metadata.get("url", "")
+                # 按段落拆分（双换行分隔），为每段分配 [DocX-ParaY] 标识
+                paragraphs = [p.strip() for p in re.split(r'\n\s*\n', doc.page_content) if p.strip()]
+                if not paragraphs:
+                    paragraphs = [doc.page_content]
+                para_lines = []
+                for para_idx, para in enumerate(paragraphs, 1):
+                    citation_key = f"Doc{doc_idx}-Para{para_idx}"
+                    para_lines.append(f"  [{citation_key}] {para}")
+                    # 同步构建 citation_metadata，确保索引与 LLM 看到的完全一致
+                    citation_metadata[citation_key] = {
+                        "filename": src,
+                        "source_type": source_type,
+                        "url": url,
+                        "paragraph_text": para,
+                        "doc_index": doc_idx,
+                        "para_index": para_idx,
+                    }
+                doc_text = "\n\n".join(para_lines)
+                doc_parts.append(f"来源: {src}{url_info}\n内容:\n{doc_text}")
             docs_text = "\n\n---\n\n".join(doc_parts)
+
+            # 发送引文标注元数据（用刚刚构建的，确保与 prompt 内索引一致）
+            if citation_metadata:
+                yield StreamEvent(
+                    event="citations",
+                    data=json.dumps(citation_metadata, ensure_ascii=False),
+                )
+
             chat_history = memory_manager.get_chat_history_string(request.session_id)
 
             prompt = f"""你是一个专业的知识问答助手。请基于提供的文档上下文回答用户问题。
 
 规则：
-1. 优先使用提供的文档信息回答
-2. 如果文档信息不足以回答问题，请明确说明
-3. 回答要简洁、准确、有条理
-4. 使用中文回答
+1. 优先使用提供的文档信息回答；信息不足时明确说明
+2. 回答简洁准确有条理，使用中文
+3. 【重要】每句陈述性内容末尾都必须标注来源，格式为 [DocX-ParaY]
+   - 单源标注: "Python是动态类型语言 [Doc1-Para2]。"
+   - 多源标注: "机器学习分为三类 [Doc1-Para1, Doc2-Para3]。"
+4. 每句话至少有一个引用标注（总结句可多源标注），没有来源的陈述不要写
+5. 严格使用文档中提供的 [DocX-ParaY] 标识
 
 文档上下文：
 {docs_text}
@@ -149,7 +184,7 @@ class RAGService:
 
 用户问题：{request.query}
 
-请回答："""
+请回答（每句话末尾都标注来源）："""
 
             llm = create_strong_llm(streaming=True)
             full_answer = ""

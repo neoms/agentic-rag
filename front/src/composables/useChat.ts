@@ -1,5 +1,5 @@
 import { ref, watch } from 'vue'
-import type { UIMessage, SourceDocument } from '../types'
+import type { UIMessage, SourceDocument, CitationInfo } from '../types'
 import { streamChat, getChatHistory } from '../api/chat'
 import * as flow from './agentFlowState'
 
@@ -86,6 +86,9 @@ export function useChat() {
   const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>(
     loadJson<Record<string, { passed: boolean; faithfulness: number }>>(LS_KEY_HALLUCINATION, {}),
   )
+
+  // 引文标注元数据
+  const streamCitations = ref<Record<string, CitationInfo>>({})
 
   // —— localStorage 同步 ——
   // 消息变化 → 持久化
@@ -206,6 +209,7 @@ export function useChat() {
     streamingContent.value = ''
     streamSources.value = []
     streamAgentPath.value = []
+    streamCitations.value = {}
     // 确保新 session 也初始化一份空的 localStorage 条目
     saveMessages(sid, [])
   }
@@ -243,6 +247,7 @@ export function useChat() {
     streamingContent.value = ''
     streamSources.value = []
     streamAgentPath.value = []
+    streamCitations.value = {}
     flow.currentNode.value = null
     flow.completedNodes.value = []
     flow.skippedNodes.value = []
@@ -341,6 +346,15 @@ export function useChat() {
                 flow.skippedNodes.value = skipped
               } catch {}
               break
+            case 'citations':
+              try {
+                const parsedCitations = JSON.parse(data)
+                streamCitations.value = parsedCitations
+                messages.value[msgIndex].citations = parsedCitations
+              } catch (e) {
+                console.error('Failed to parse citations:', e)
+              }
+              break
             case 'token':
               streamingContent.value += data
               messages.value[msgIndex].content = streamingContent.value
@@ -405,6 +419,7 @@ export function useChat() {
     streamSources,
     streamAgentPath,
     isStreaming,
+    streamCitations,
     hallucinationResults,
     send,
     loadSession,
