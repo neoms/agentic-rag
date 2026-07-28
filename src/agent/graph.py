@@ -43,20 +43,30 @@ def should_continue_after_grade(state: AgentState) -> Literal["generate", "trans
     """文档评估后的条件路由
 
     - 文档相关 → 进入答案生成
+    - 文档不相关 + 文档为空（向量库无匹配）→ 跳过查询重写，走 web_search 或降级生成
     - 文档不相关 + 开启联网搜索 → 联网搜索（降级方案）
     - 文档不相关 + 开启查询重写 + 未超过重试次数 → 查询重写
     - 其他情况 → 进入生成（降级处理）
     """
     enable_web = state.get("enable_web_search", False)
     enable_transform = state.get("enable_transform_query", True)
-    logger.info("路由决策: documents_relevant=%s, web_search=%s, transform_query=%s",
-                state.get("documents_relevant", False), enable_web, enable_transform)
+    documents = state.get("documents", [])
+    logger.info("路由决策: documents_relevant=%s, documents_count=%d, web_search=%s, transform_query=%s",
+                state.get("documents_relevant", False), len(documents), enable_web, enable_transform)
 
     if state.get("documents_relevant", False):
         logger.info("路由: 文档相关 → generate")
         return "generate"
 
-    # 向量库无相关文档且开启了联网搜索 → 走联网搜索降级
+    # 检索结果为空 → 查询重写无意义，直接走 web_search 或降级生成
+    if not documents:
+        if enable_web:
+            logger.info("路由: 文档为空 + 联网搜索已开启 → web_search")
+            return "web_search"
+        logger.info("路由: 文档为空 → generate (降级)")
+        return "generate"
+
+    # 向量库有文档但被评估为不相关
     if enable_web:
         logger.info("路由: 文档不相关 + 联网搜索已开启 → web_search")
         return "web_search"
