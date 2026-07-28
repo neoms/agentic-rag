@@ -512,6 +512,13 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
       </Teleport>
     </div>
 
+    <!-- 点击提示 -->
+    <div class="px-3 py-1.5 border-t border-slate-700/30">
+      <p class="text-[10px] text-slate-600 text-center leading-relaxed">
+        💡 点击流程图中的节点可查看输入 / 输出详情
+      </p>
+    </div>
+
     <!-- Footer -->
     <div class="mt-auto px-3 py-4 border-t border-slate-700/50">
       <div class="text-[11px] text-slate-600 text-center">v0.1.0</div>
