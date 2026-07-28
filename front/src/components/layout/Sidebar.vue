@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { MessageCircle, Database, Network } from 'lucide-vue-next'
+import { MessageCircle, Database, Network, X } from 'lucide-vue-next'
 import * as flow from '../../composables/agentFlowState'
 
 const route = useRoute()
@@ -68,6 +69,94 @@ function state(id: string): NodeState {
   if (flow.currentNode.value === id) return 'active'
   return 'pending'
 }
+
+// ── 节点点击交互 ──
+const svgContainerRef = ref<HTMLElement | null>(null)
+const popoverLeft = ref(0)
+const popoverTop = ref(0)
+const popoverShowInput = ref(false)
+const popoverShowOutput = ref(false)
+
+const selectedNodeInfo = computed(() =>
+  flow.selectedNodeId.value ? getNodeInfo(flow.selectedNodeId.value) : undefined
+)
+
+function isNodeExecuted(id: string): boolean {
+  const s = state(id)
+  return s === 'done' || s === 'active'
+}
+
+function getNotExecutedReason(id: string): string {
+  const s = state(id)
+  if (s === 'disabled') return '该节点被策略开关关闭，未执行'
+  if (s === 'skipped')  return '该节点在运行时被条件路由跳过'
+  if (s === 'pending')  return '该节点在本次流程中未被调度执行'
+  return ''
+}
+
+function nodeStatusColor(id: string): string {
+  const s = state(id)
+  if (s === 'done')     return 'text-emerald-400'
+  if (s === 'active')   return 'text-blue-400'
+  if (s === 'disabled') return 'text-slate-500'
+  if (s === 'skipped')  return 'text-orange-400'
+  return 'text-slate-500'
+}
+
+function nodeStatusText(id: string): string {
+  const s = state(id)
+  if (s === 'done')     return '✅ 已执行'
+  if (s === 'active')   return '⏳ 执行中'
+  if (s === 'disabled') return '⛔ 已禁用'
+  if (s === 'skipped')  return '⏭ 已跳过'
+  return '⏸ 待执行'
+}
+
+function getNodeInfo(id: string): flow.NodeDataInfo | undefined {
+  return flow.nodeDataMap.value[id]
+}
+
+function isArray(val: unknown): val is unknown[] {
+  return Array.isArray(val)
+}
+
+function onNodeClick(n: N, event: MouseEvent) {
+  // 点击已选中节点 → 关闭
+  if (flow.selectedNodeId.value === n.id) {
+    flow.selectedNodeId.value = null
+    return
+  }
+
+  // 重设展开状态
+  popoverShowInput.value = false
+  popoverShowOutput.value = false
+
+  // 计算弹窗位置（相对视口 fixed 定位，避免被父容器 overflow 裁剪）
+  flow.selectedNodeId.value = n.id
+  const target = event.currentTarget as HTMLElement
+  const rect = target.getBoundingClientRect()
+
+  popoverLeft.value = rect.right + 4
+  popoverTop.value = rect.top - 4
+}
+
+function closePopover() {
+  flow.selectedNodeId.value = null
+  popoverShowInput.value = false
+  popoverShowOutput.value = false
+}
+
+// 点击弹窗外部关闭
+function onDocumentClick(e: MouseEvent) {
+  if (!flow.selectedNodeId.value) return
+  const target = e.target as HTMLElement
+  if (!target.closest('.flow-node') && !target.closest('.node-popover') && !target.closest('.popover-close-btn')) {
+    closePopover()
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onUnmounted(() => document.removeEventListener('click', onDocumentClick))
 const FILL: Record<string, string> = {
   active: '#1d4ed8', done: '#065f46', disabled: '#1e293b', skipped: '#1e293b', pending: '#1e293b',
 }
@@ -139,10 +228,12 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
     </nav>
 
     <!-- SVG 流程图 -->
-    <div class="border-t border-slate-700/50 px-2 py-2">
+    <div ref="svgContainerRef" class="border-t border-slate-700/50 px-2 py-2 relative" style="z-index: 1">
       <div class="flex items-center gap-1.5 mb-1.5 pl-1">
         <Network class="w-3 h-3 text-slate-500" />
         <span class="text-[10px] font-medium text-slate-500">Agent 流程</span>
+        <span v-if="flow.selectedNodeId.value" class="text-[10px] text-slate-600 ml-auto cursor-pointer popover-close-btn"
+          @click.stop="closePopover">✕ 关闭</span>
       </div>
 
       <svg viewBox="0 0 380 480" class="w-full" style="max-height: 480px">
@@ -307,12 +398,14 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
 
         <!-- ═══ 节点列表 ═══ -->
-        <g v-for="n in NODES" :key="n.id">
+        <g v-for="n in NODES" :key="n.id" class="flow-node" :class="{ 'cursor-pointer': true }"
+          @click.stop="onNodeClick(n, $event)"
+          :style="flow.selectedNodeId.value === n.id ? 'filter: brightness(1.3)' : ''">
           <rect
             :x="n.x" :y="n.y" :width="n.w" :height="n.h" rx="4" ry="4"
             :fill="FILL[state(n.id)]"
             :stroke="STROKE[state(n.id)]"
-            :stroke-width="state(n.id) === 'active' ? 2 : 1"
+            :stroke-width="state(n.id) === 'active' || flow.selectedNodeId.value === n.id ? 2 : 1"
             :filter="state(n.id) === 'active' ? 'url(#gl)' : ''"
             :style="state(n.id) === 'active' ? 'animation: pulse 1.4s ease-in-out infinite' : ''"
           />
@@ -330,6 +423,93 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           >✓</text>
         </g>
       </svg>
+
+      <!-- ═══ 节点信息 Popover（Teleport 到 body 避免被 sidebar 层叠上下文遮挡） ═══ -->
+      <Teleport to="body">
+        <div v-if="flow.selectedNodeId.value"
+          class="node-popover fixed z-[9999] bg-slate-800 border border-slate-600 rounded-lg shadow-2xl w-64 overflow-hidden"
+          :style="{ left: popoverLeft + 'px', top: popoverTop + 'px' }">
+          <!-- 标题 -->
+          <div class="flex items-center justify-between px-3 py-2 border-b border-slate-700">
+            <span class="text-xs font-semibold text-slate-200">
+              {{ byId(flow.selectedNodeId.value)?.label }}
+            </span>
+            <button @click.stop="closePopover"
+              class="p-0.5 rounded hover:bg-slate-700 text-slate-500 hover:text-slate-300 transition-colors">
+              <X class="w-3 h-3" />
+            </button>
+          </div>
+          <!-- 状态 -->
+          <div class="px-3 py-1.5 border-b border-slate-700/50">
+            <span class="text-[10px] text-slate-500 mr-2">状态</span>
+            <span class="text-[11px]" :class="nodeStatusColor(flow.selectedNodeId.value)">
+              {{ nodeStatusText(flow.selectedNodeId.value) }}
+            </span>
+          </div>
+          <!-- I/O 数据（已执行节点） -->
+          <template v-if="isNodeExecuted(flow.selectedNodeId.value)">
+          <div class="px-3 py-2 space-y-1.5">
+            <!-- 输入 -->
+            <div>
+              <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
+                @click.stop="popoverShowInput = !popoverShowInput">
+                <span class="text-[10px] font-mono text-blue-400/70">{{ popoverShowInput ? '▾' : '▸' }}</span>
+                <span class="text-[10px] font-medium text-blue-400/70">输入</span>
+              </div>
+              <template v-if="popoverShowInput">
+                <!-- 字符串 -->
+                <p v-if="selectedNodeInfo && !isArray(selectedNodeInfo.input)"
+                  class="mt-0.5 text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
+                  {{ selectedNodeInfo.input }}
+                </p>
+                <!-- 数组逐条列表 -->
+                <ul v-else-if="selectedNodeInfo && isArray(selectedNodeInfo.input)"
+                  class="mt-0.5 space-y-1 max-h-40 overflow-y-auto">
+                  <li v-for="(item, i) in selectedNodeInfo.input" :key="i"
+                    class="text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
+                    {{ item }}
+                  </li>
+                </ul>
+                <p v-else class="mt-0.5 text-[10px] text-slate-500 italic">无输入数据</p>
+              </template>
+            </div>
+            <!-- 输出 -->
+            <div>
+              <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
+                @click.stop="popoverShowOutput = !popoverShowOutput">
+                <span class="text-[10px] font-mono text-emerald-400/70">{{ popoverShowOutput ? '▾' : '▸' }}</span>
+                <span class="text-[10px] font-medium text-emerald-400/70">输出</span>
+              </div>
+              <template v-if="popoverShowOutput">
+                <!-- 字符串 -->
+                <p v-if="selectedNodeInfo && !isArray(selectedNodeInfo.output)"
+                  class="mt-0.5 text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
+                  {{ selectedNodeInfo.output }}
+                </p>
+                <!-- 数组逐条列表 -->
+                <ul v-else-if="selectedNodeInfo && isArray(selectedNodeInfo.output)"
+                  class="mt-0.5 space-y-1 max-h-40 overflow-y-auto">
+                  <li v-for="(item, i) in selectedNodeInfo.output" :key="i"
+                    class="text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
+                    {{ item }}
+                  </li>
+                </ul>
+                <p v-else class="mt-0.5 text-[10px] text-slate-500 italic">无输出数据</p>
+              </template>
+            </div>
+          </div>
+          <div v-if="!selectedNodeInfo" class="px-3 py-2">
+            <p class="text-[10px] text-slate-500 italic">节点已执行，但本次查询未产生详细数据</p>
+          </div>
+        </template>
+        <!-- 未执行提示 -->
+        <div v-else class="px-3 py-2">
+          <p class="text-[10px] text-slate-500 leading-relaxed">
+            {{ getNotExecutedReason(flow.selectedNodeId.value) }}
+          </p>
+        </div>
+      </div>
+      </Teleport>
     </div>
 
     <!-- Footer -->

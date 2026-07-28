@@ -251,6 +251,7 @@ export function useChat() {
     flow.currentNode.value = null
     flow.completedNodes.value = []
     flow.skippedNodes.value = []
+    flow.nodeDataMap.value = {}          // 清空上一轮节点 I/O 数据
 
     const assistantMsg: UIMessage = {
       id: crypto.randomUUID(),
@@ -379,6 +380,13 @@ export function useChat() {
                   [assistantId]: { passed: hr.passed, faithfulness: hr.faithfulness },
                 }
               } catch {}
+              break
+            case 'node_data':
+              try {
+                flow.nodeDataMap.value = JSON.parse(data)
+              } catch (e) {
+                console.error('Failed to parse node_data:', e)
+              }
               break
             case 'error':
               try {

@@ -18,3 +18,17 @@ export const enableBm25: Ref<boolean> = ref(false)
 export const enableHyde: Ref<boolean> = ref(false)
 export const enableMultiQuery: Ref<boolean> = ref(false)
 export const enableKg: Ref<boolean> = ref(false)
+
+/** 每轮提问的节点 I/O 数据记录（仅前端，新提问时清空）
+ *  key = 节点 ID (如 'retrieve')
+ *  value = { input: string | string[], output: string | string[] }
+ *  当为 string[] 时，前端以列表形式逐条展示
+ */
+export type NodeDataInfo = {
+  input: string | string[];
+  output: string | string[];
+}
+export const nodeDataMap: Ref<Record<string, NodeDataInfo>> = ref({})
+
+/** 当前选中的流程图节点 ID（用于 popover 展示） */
+export const selectedNodeId: Ref<string | null> = ref(null)

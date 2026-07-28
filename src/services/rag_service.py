@@ -97,6 +97,9 @@ class RAGService:
         result = final_state.values if final_state else {}
         logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
 
+        # 从 final_state 构建各图内节点的 I/O 数据
+        node_data: dict[str, dict[str, str | list[str]]] = self._build_node_data(result, request)
+
         agent_path = result.get("agent_path", [])
         # 过滤掉 graph 内部标记为 skipped 的节点（非流式模式或空状态下的安全兜底）
         agent_path = [p for p in agent_path if "skipped" not in p]
@@ -193,6 +196,19 @@ class RAGService:
                     full_answer += chunk.content
                     yield StreamEvent(event="token", data=chunk.content)
 
+            # 填充 generate 节点的 I/O 数据（含具体文档列表）
+            gen_input: list[str] = [f"问题: {request.query}"]
+            for i, doc in enumerate(documents[:8]):
+                src = doc.metadata.get("url") or doc.metadata.get("filename", f"文档{i+1}")
+                preview = doc.page_content[:100].replace("\n", " ")
+                gen_input.append(f"参考 {src}:\n{preview}...")
+            if len(documents) > 8:
+                gen_input.append(f"... 及其他 {len(documents) - 8} 条")
+            node_data["generate"] = {
+                "input": gen_input,
+                "output": full_answer,
+            }
+
             # 流式生成完成后，进行幻觉检测（仅在开启自反思时）
             hallucination_passed = True
             hallucination_faithfulness = 100.0
@@ -249,6 +265,18 @@ class RAGService:
                         "faithfulness": hallucination_faithfulness,
                     }, ensure_ascii=False),
                 )
+                # 填充 check_hallucination 节点的 I/O 数据
+                node_data["check_hallucination"] = {
+                    "input": [
+                        f"待检测答案 ({len(full_answer)} 字符):",
+                        full_answer[:300] + ("..." if len(full_answer) > 300 else ""),
+                    ],
+                    "output": [
+                        f"忠实度: {hallucination_faithfulness}%",
+                        f"判定: {'PASSED ✓' if hallucination_passed else 'FAILED ✗'}",
+                        f"结果: {'答案忠实于参考文档' if hallucination_passed else '答案存在编造，需要重试'}",
+                    ],
+                }
 
             # 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)
@@ -258,10 +286,154 @@ class RAGService:
             yield StreamEvent(event="token", data=msg)
             memory_manager.add_interaction(request.session_id, request.query, msg)
             logger.info("[stream_rag] 无文档，返回兜底回答")
+            node_data["generate"] = {
+                "input": [f"用户问题: {request.query}", "参考文档: 无（未检索到相关文档）"],
+                "output": "兜底回答: 未找到相关文档",
+            }
 
+        # 发送节点 I/O 数据（用于前端流程图点击展示）
+        yield StreamEvent(
+            event="node_data",
+            data=json.dumps(node_data, ensure_ascii=False),
+        )
         # 完成
         yield StreamEvent(event="done", data="")
         logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
+
+    @staticmethod
+    def _doc_items(doc_list: list, max_docs: int = 8) -> list[str]:
+        """生成文档列表项（每项含来源和内容预览）"""
+        items = []
+        for i, doc in enumerate(doc_list[:max_docs]):
+            src = doc.metadata.get("url") or doc.metadata.get("filename", f"文档{i+1}")
+            preview = doc.page_content[:100].replace("\n", " ")
+            items.append(f"来源: {src}\n{preview}...")
+        if len(doc_list) > max_docs:
+            items.append(f"... 及其他 {len(doc_list) - max_docs} 条")
+        return items
+
+    @staticmethod
+    def _build_node_data(
+        result: dict, request: AgenticChatRequest, documents: list | None = None
+    ) -> dict[str, dict[str, str | list[str]]]:
+        """从 final_state 提取各图内节点的输入/输出数据（含具体内容列表）"""
+        docs = result.get("documents", []) if documents is None else documents
+        query = request.query
+        kg_context = result.get("kg_context", "")
+
+        data: dict[str, dict[str, str | list[str]]] = {}
+
+        # ── 意图分析 ──
+        kg_intent = result.get('kg_intent', False)
+        data["analyze_kg_intent"] = {
+            "input": f"用户问题: {query}",
+            "output": [
+                f"KG意图判定: {'是' if kg_intent else '否'}",
+                f"说明: {'问题涉及实体关系查询，需要启用图谱检索' if kg_intent else '问题不涉及实体关系，走标准RAG流程'}",
+            ],
+        }
+
+        # ── 检索节点 ──
+        rewritten = result.get("rewritten_query", "") or query
+        data["retrieve"] = {
+            "input": f"查询语句: {rewritten}",
+            "output": RAGService._doc_items(docs),
+        }
+
+        if request.enable_bm25:
+            bm25_docs = result.get("documents_bm25", [])
+            data["bm25_retrieve"] = {
+                "input": f"BM25查询: {query}",
+                "output": RAGService._doc_items(bm25_docs),
+            }
+
+        if request.enable_hyde:
+            hyde_docs = result.get("documents_hyde", [])
+            data["hyde_retrieve"] = {
+                "input": f"HyDE查询: {query}",
+                "output": RAGService._doc_items(hyde_docs),
+            }
+
+        if request.enable_multi_query:
+            mq_docs = result.get("documents_multi_query", [])
+            data["multi_query_retrieve"] = {
+                "input": f"多角度查询: {query}",
+                "output": RAGService._doc_items(mq_docs),
+            }
+
+        # ── 图谱检索 ──
+        data["kg_retrieve"] = {
+            "input": [
+                f"用户问题: {query}",
+                f"KG意图: {'是' if kg_intent else '否'}",
+            ],
+            "output": [
+                f"图谱上下文 ({len(kg_context)} 字符):",
+                (kg_context[:300] + "...") if kg_context else "无图谱结果",
+            ],
+        }
+
+        # ── 合并检索 ──
+        strategies = ["语义检索"]
+        if request.enable_bm25: strategies.append("BM25")
+        if request.enable_hyde: strategies.append("HyDE")
+        if request.enable_multi_query: strategies.append("多角度查询")
+        data["merge_retrieval"] = {
+            "input": [f"已汇聚 {len(strategies)} 路检索策略:"] + strategies,
+            "output": RAGService._doc_items(docs),
+        }
+
+        # ── 重排序（输出与输入文档内容一致，仅排序变化） ──
+        if request.enable_rerank:
+            data["rerank_documents"] = {
+                "input": [f"待重排序文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
+                "output": [f"重排序结果 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
+            }
+
+        # ── 文档评估 ──
+        if request.enable_grade_documents:
+            relevant = result.get('documents_relevant', False)
+            # 从 agent_path 推断哪些文档被标记为相关
+            grade_verdict = "全部通过" if relevant else "部分/全部未通过"
+            data["grade_documents"] = {
+                "input": [f"待评估文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
+                "output": [
+                    f"评估结论: {grade_verdict}",
+                    f"相关性: {'文档均合格，进入生成' if relevant else '不合格，触发重写/联网搜索'}",
+                ],
+            }
+
+        # ── 查询重写 ──
+        if request.enable_transform_query:
+            rewritten_q = result.get('rewritten_query', query)
+            data["transform_query"] = {
+                "input": f"原始问题: {query}",
+                "output": f"改写后查询: {rewritten_q}",
+            }
+
+        # ── 联网搜索 ──
+        if request.enable_web_search:
+            # 从最终文档中找到来源为 web 的结果
+            web_results = [d for d in docs if d.metadata.get("source") == "web"] if docs else []
+            if web_results:
+                web_items = []
+                for d in web_results[:5]:
+                    url = d.metadata.get("url", "未知来源")
+                    preview = d.page_content[:80].replace("\n", " ")
+                    web_items.append(f"{url}\n{preview}...")
+                if len(web_results) > 5:
+                    web_items.append(f"... 及其他 {len(web_results) - 5} 条")
+                data["web_search"] = {
+                    "input": f"联网搜索词: {query}",
+                    "output": web_items,
+                }
+            else:
+                data["web_search"] = {
+                    "input": f"联网搜索词: {query}",
+                    "output": ["搜索结果已合并到文档集，可在对应文档节点查看详情"],
+                }
+
+        return data
 
     def get_history(self, session_id: str) -> ChatHistoryResponse:
         """获取会话历史"""
