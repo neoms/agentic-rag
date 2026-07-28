@@ -7,6 +7,8 @@ import type { Ref } from 'vue'
 
 export const completedNodes: Ref<string[]> = ref([])
 export const currentNode: Ref<string | null> = ref(null)
+/** Config-disabled 之外的 runtime skip (e.g. enable_kg=true but kg_intent=false) */
+export const skippedNodes: Ref<string[]> = ref([])
 export const enableRerank: Ref<boolean> = ref(true)
 export const enableGradeDocuments: Ref<boolean> = ref(true)
 export const enableTransformQuery: Ref<boolean> = ref(true)

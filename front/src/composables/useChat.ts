@@ -245,6 +245,7 @@ export function useChat() {
     streamAgentPath.value = []
     flow.currentNode.value = null
     flow.completedNodes.value = []
+    flow.skippedNodes.value = []
 
     const assistantMsg: UIMessage = {
       id: crypto.randomUUID(),
@@ -329,6 +330,15 @@ export function useChat() {
               try {
                 streamAgentPath.value = JSON.parse(data)
                 messages.value[msgIndex].agent_path = streamAgentPath.value
+                // Compute runtime-skipped nodes from agent_path
+                const skipped: string[] = []
+                for (const p of streamAgentPath.value) {
+                  // analyze_kg_intent (disabled/empty kg/error) → kg_retrieve skipped
+                  if (p.startsWith('analyze_kg_intent') && (p.includes('disabled') || p.includes('empty kg') || p.includes('error'))) {
+                    skipped.push('kg_retrieve')
+                  }
+                }
+                flow.skippedNodes.value = skipped
               } catch {}
               break
             case 'token':
