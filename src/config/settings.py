@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     kg_data_dir: str = "kg_data"
     kg_max_hops: int = 2           # 子图提取最大跳数
     kg_max_entities: int = 10      # 单次查询最多提取实体数
+    kg_max_concurrency: int = 3    # KG 构建 LLM 并发调用数
 
     # ========== LLM 重试 ==========
     llm_max_retries: int = 3             # 最大重试次数
