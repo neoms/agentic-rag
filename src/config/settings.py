@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     kg_max_hops: int = 2           # 子图提取最大跳数
     kg_max_entities: int = 10      # 单次查询最多提取实体数
 
+    # ========== LLM 重试 ==========
+    llm_max_retries: int = 3             # 最大重试次数
+    llm_retry_min_wait: int = 2          # 重试最小等待秒数 (exponential backoff)
+    llm_retry_max_wait: int = 30         # 重试最大等待秒数
+    llm_request_timeout: int = 120       # 单次请求超时秒数
+
     # ========== 服务 ==========
     app_host: str = "0.0.0.0"
     app_port: int = 8000
