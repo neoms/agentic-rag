@@ -2,16 +2,26 @@
 
 import io
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from langchain_core.documents import Document
 from PyPDF2 import PdfReader
 import markdown
-import re
+
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 HTML_CLEANER = re.compile(r"<[^>]+>")
+
+# Unicode 范围：CJK 统一表意文字
+_CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _is_readable_char(ch: str) -> bool:
+    """判断字符是否属于可读字符（拉丁字母或 CJK 汉字）"""
+    return (ch.isascii() and ch.isalpha()) or bool(_CJK_PATTERN.match(ch))
 
 # 文件魔数签名映射
 MAGIC_SIGNATURES: dict[str, bytes] = {
@@ -79,6 +89,40 @@ LOADER_MAP = {
 }
 
 
+def validate_content(texts: list[str], filename: str) -> None:
+    """校验解析结果的内容完整性
+
+    Args:
+        texts: 解析后的文本片段列表
+        filename: 文件名（用于日志）
+
+    Raises:
+        ValueError: 内容为空或有效字符数不足最低阈值
+    """
+    if not texts:
+        raise ValueError(f"文件 {filename} 解析后内容为空")
+
+    total_chars = sum(len(t) for t in texts)
+    if total_chars < settings.min_content_chars:
+        raise ValueError(
+            f"文件 {filename} 解析后有效字符数 {total_chars} 不足最低阈值 {settings.min_content_chars}"
+        )
+
+    # 计算可读字符比例
+    all_text = "".join(texts)
+    readable_count = sum(1 for ch in all_text if _is_readable_char(ch))
+    readable_ratio = readable_count / total_chars if total_chars > 0 else 0.0
+
+    if readable_ratio < settings.min_readable_ratio:
+        logger.warning(
+            "文件 %s 可读字符比例 %.1f%% 低于阈值 %.0f%%，内容可能异常",
+            filename, readable_ratio * 100, settings.min_readable_ratio * 100,
+        )
+    else:
+        logger.debug("内容完整性校验通过: %s (chars=%d, readable=%.1f%%)",
+                     filename, total_chars, readable_ratio * 100)
+
+
 def load_document(file_bytes: bytes, filename: str) -> list[str]:
     """根据文件扩展名自动选择解析器
 
@@ -108,4 +152,9 @@ def load_document(file_bytes: bytes, filename: str) -> list[str]:
     loader = LOADER_MAP.get(suffix)
     if loader is None:
         raise ValueError(f"不支持的文件格式: {suffix}，支持的格式: {list(LOADER_MAP.keys())}")
-    return loader(file_bytes, filename)
+    texts = loader(file_bytes, filename)
+
+    # 内容完整性预检
+    validate_content(texts, filename)
+
+    return texts

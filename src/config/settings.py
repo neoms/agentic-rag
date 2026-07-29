@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 10
     allowed_extensions: str = "pdf,md,txt"
 
+    # ========== 内容校验 ==========
+    min_content_chars: int = 20          # 解析后最少有效字符数
+    min_readable_ratio: float = 0.3      # 可读字符（字母+中文）最低比例
+
     # ========== HyDE 假设文档嵌入 ==========
     hyde_model: str = "qwen-turbo"  # 用于生成假设答案的模型
 
