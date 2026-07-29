@@ -1,11 +1,13 @@
-"""文档加载器 - 支持 PDF、Markdown、TXT 格式解析"""
+"""文档加载器 - 支持 PDF、Markdown、TXT、DOCX、CSV 格式解析"""
 
+import csv
 import io
 import logging
 import re
 from pathlib import Path
 from typing import Optional
 from langchain_core.documents import Document
+from docx import Document as DocxDocument
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextContainer, LAParams
 
@@ -136,10 +138,67 @@ def load_txt(file_bytes: bytes, filename: str) -> list[str]:
     return paragraphs
 
 
+def load_docx(file_bytes: bytes, filename: str) -> list[str]:
+    """解析 DOCX 文件，按段落返回文本列表"""
+    try:
+        doc = DocxDocument(io.BytesIO(file_bytes))
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
+        if not paragraphs:
+            logger.warning("DOCX %s 未解析到段落文本", filename)
+        logger.info("DOCX %s 解析出 %d 段落", filename, len(paragraphs))
+        return paragraphs
+    except Exception as e:
+        logger.warning("DOCX 解析失败 %s: %s，返回空列表", filename, e)
+        return []
+
+
+def load_csv(file_bytes: bytes, filename: str) -> list[str]:
+    """解析 CSV 文件，将每行转为文本，跳过空行
+
+    首行作为表头，后续每行按列拼接为 "列名: 值" 格式。
+    """
+    try:
+        text = file_bytes.decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        rows = list(reader)
+        if not rows:
+            logger.warning("CSV %s 为空文件", filename)
+            return []
+
+        header = rows[0]
+        lines: list[str] = []
+
+        # 表头单独作为一行
+        header_text = " | ".join(cell.strip() for cell in header if cell.strip())
+        if header_text:
+            lines.append(f"[表头] {header_text}")
+
+        # 数据行：每行转 "列名: 值" 格式
+        for row in rows[1:]:
+            cols = [cell.strip() for cell in row]
+            if not any(cols):
+                continue
+            parts = []
+            for i, val in enumerate(cols):
+                col_name = header[i].strip() if i < len(header) else f"列{i}"
+                if val:
+                    parts.append(f"{col_name}: {val}")
+            if parts:
+                lines.append(" | ".join(parts))
+
+        logger.info("CSV %s 解析出 %d 行", filename, len(lines))
+        return lines
+    except Exception as e:
+        logger.warning("CSV 解析失败 %s: %s，返回空列表", filename, e)
+        return []
+
+
 LOADER_MAP = {
     ".pdf": load_pdf,
     ".md": load_markdown,
     ".txt": load_txt,
+    ".docx": load_docx,
+    ".csv": load_csv,
 }
 
 

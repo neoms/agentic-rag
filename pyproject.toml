@@ -20,6 +20,7 @@ dependencies = [
     "networkx>=3.5,<4",
     "pdfminer-six>=20260107",
     "pydantic-settings>=2.14.2",
+    "python-docx>=1.2.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.32",
     "rank-bm25>=0.2.2",
