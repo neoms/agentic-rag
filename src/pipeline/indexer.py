@@ -9,7 +9,7 @@ from src.pipeline.loader import load_document
 from src.pipeline.chunker import chunk_texts
 from src.store.vector_store import vector_store
 from src.store.document_registry import document_registry
-from src.knowledge_graph import get_graph_store, get_graph_builder
+from src.knowledge_graph import get_graph_store, get_graph_builder, get_graph_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,8 @@ class DocumentIndexer:
                     "KG 级联清理: 移除 %d 实体, %d 关系, doc_id=%s",
                     kg_entities, kg_relations, doc_id,
                 )
+                # 实体发生变更，清除 FAISS/SQLite 缓存，下次搜索时自动重建
+                get_graph_retriever().clear_entity_cache()
         except Exception as e:
             logger.warning("KG 清理失败（不影响主流程）: %s", e)
         return chunk_count

@@ -3,9 +3,17 @@
 从用户问题中提取实体 → 实体链接 → 子图提取 → 多跳路径推理 → 生成结构化上下文
 """
 
-import json
 import logging
+import sqlite3
+from pathlib import Path
 from typing import Any
+
+import faiss
+import numpy as np
+
+# macOS 上 numpy 和 faiss 各自携带的 OpenMP 运行时可能冲突
+# （OMP: Error #15），限制 FAISS 为单线程避免死锁。
+faiss.omp_set_num_threads(1)
 
 from src.agent.prompts import KG_RETRIEVE_ENTITY_EXTRACT_USER
 from src.backend.llm import create_fast_llm
@@ -14,6 +22,230 @@ from src.knowledge_graph.graph_store import GraphStore
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# FAISS 索引与 SQLite 数据库文件名
+_FAISS_INDEX_FILENAME = "entity_embeddings.index"
+_SQLITE_DB_FILENAME = "entity_embeddings.db"
+# 索引格式版本：用于检测磁盘上的旧格式文件是否需要重建
+_INDEX_VERSION = "flatip_v1"
+
+
+class EntityEmbeddingStore:
+    """基于 FAISS + SQLite 的实体向量持久化存储
+
+    FAISS Index（HNSW）：存储向量并支持高效的近似最近邻搜索（O(log n)）
+    SQLite：维护 faiss_id ↔ entity_name 的映射关系（持久化到磁盘）
+
+    用法：
+        store = EntityEmbeddingStore("data/kg")
+        store.rebuild(names, embeddings)   # 全量重建
+        results = store.search(query_emb)  # 语义搜索
+        store.save()                       # 持久化
+    """
+
+    def __init__(self, data_dir: str | Path):
+        self._data_dir = Path(data_dir)
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+
+        self._index_path = self._data_dir / _FAISS_INDEX_FILENAME
+        self._db_path = self._data_dir / _SQLITE_DB_FILENAME
+
+        # 初始化 SQLite
+        self._conn = sqlite3.connect(str(self._db_path))
+        self._init_db()
+
+        # 初始化或加载 FAISS 索引
+        self._index: faiss.Index = self._load_or_create_index()
+
+    # ── 初始化 ────────────────────────────────────────────────
+
+    def _init_db(self) -> None:
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                faiss_id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entity_name ON entities(name)"
+        )
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        self._conn.commit()
+
+    def _get_metadata(self, key: str) -> str | None:
+        """读取 SQLite metadata"""
+        cursor = self._conn.execute(
+            "SELECT value FROM metadata WHERE key = ?", (key,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    def _set_metadata(self, key: str, value: str) -> None:
+        """写入 SQLite metadata"""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def get_synced_count(self) -> int:
+        """读取上次重建时记录的图谱节点数（持久化，跨进程/重启有效）"""
+        val = self._get_metadata("synced_node_count")
+        return int(val) if val else 0
+
+    def set_synced_count(self, count: int) -> None:
+        """持久化图谱节点数"""
+        self._set_metadata("synced_node_count", str(count))
+
+    def _load_or_create_index(self) -> faiss.Index:
+        """从磁盘加载 FAISS 索引；若版本不匹配或不存在则返回空索引（仅占位）。
+
+        版本检测确保索引格式变更（如 HNSW → FlatIP）时自动清理重建。
+        """
+        index_version = self._get_metadata("index_version")
+        if self._index_path.exists() and index_version == _INDEX_VERSION:
+            logger.info("从磁盘加载 FAISS 索引: %s", self._index_path)
+            return faiss.read_index(str(self._index_path))
+
+        # 版本不匹配或文件不存在 → 删除旧文件，重建
+        if self._index_path.exists():
+            logger.info("FAISS 索引格式变更 (%s → %s)，清除重建",
+                         index_version or "none", _INDEX_VERSION)
+            self._index_path.unlink()
+        else:
+            logger.info("FAISS 索引不存在，等待首次重建: %s", self._index_path)
+
+        # 返回空占位索引，rebuild() 时替换为正确格式
+        dummy = faiss.IndexFlat(1, 1)
+        return faiss.IndexIDMap(dummy)
+
+    # ── 属性 ──────────────────────────────────────────────────
+
+    @property
+    def size(self) -> int:
+        return self._index.ntotal
+
+    # ── 核心操作 ──────────────────────────────────────────────
+
+    def rebuild(self, names: list[str], embeddings: list[list[float]]) -> None:
+        """全量重建索引（清空旧数据，重新构建）
+
+        Args:
+            names: 实体名称列表
+            embeddings: 对应的 embedding 向量列表
+        """
+        if not names or not embeddings:
+            logger.warning("rebuild 跳过：空数据")
+            return
+
+        dim = len(embeddings[0])
+        logger.info("全量重建实体向量索引: %d 个实体, dim=%d", len(names), dim)
+
+        # 使用 FlatIP（暴力内积搜索），向量归一化后内积 = cosine。
+        # 79 个实体用 HNSW 近似搜索属于过度设计，暴力搜索更简单可靠。
+        self._index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+
+        # 归一化 → 内积等价于 cosine 相似度
+        embs = np.array(embeddings, dtype=np.float32)
+        faiss.normalize_L2(embs)
+        ids = np.arange(len(names), dtype=np.int64)
+        self._index.add_with_ids(embs, ids)
+
+        # 重建 SQLite 映射
+        self._conn.execute("DELETE FROM entities")
+        rows = [(int(ids[i]), names[i]) for i in range(len(names))]
+        self._conn.executemany(
+            "INSERT INTO entities (faiss_id, name) VALUES (?, ?)", rows
+        )
+        self.set_synced_count(len(names))
+        self._set_metadata("index_version", _INDEX_VERSION)
+
+        logger.info("实体向量索引重建完成，共 %d 个实体", len(names))
+
+    def search(
+        self, query_emb: list[float], top_k: int = 10
+    ) -> list[tuple[str, float]]:
+        """搜索最相似的实体
+
+        不使用 FAISS 内置 search()（macOS 上 OpenMP 冲突导致挂死），
+        改用 numpy 手动计算余弦相似度 + argsort 取 top-k。
+        对于 < 10000 个实体的规模，手动搜索足够快。
+
+        Args:
+            query_emb: 查询向量
+            top_k: 返回最相似的 k 个结果
+
+        Returns:
+            [(entity_name, cosine_similarity), ...]，按相似度降序排列
+        """
+        n = self._index.ntotal
+        if n == 0:
+            return []
+
+        q = np.array(query_emb, dtype=np.float32)
+        norm = np.linalg.norm(q)
+        if norm > 0:
+            q = q / norm  # 归一化查询向量
+
+        # 从 FAISS 读取所有已归一化的实体向量
+        # IndexIDMap 不支持 reconstruct，直接访问内层 IndexFlatIP
+        inner_index = self._index.index  # IndexFlatIP
+        dim = inner_index.d
+        vectors = np.zeros((n, dim), dtype=np.float32)
+        for i in range(n):
+            vectors[i] = inner_index.reconstruct(i)
+
+        # 矩阵乘法 → cosine 相似度
+        scores = np.dot(vectors, q)  # shape (n,)
+
+        # numpy argsort 取 top-k
+        top_k_actual = min(top_k, n)
+        if top_k_actual == n:
+            sorted_indices = np.argsort(-scores)
+        else:
+            sorted_indices = np.argpartition(-scores, top_k_actual)[:top_k_actual]
+            sorted_indices = sorted_indices[np.argsort(-scores[sorted_indices])]
+
+        results: list[tuple[str, float]] = []
+        for idx in sorted_indices:
+            sim = float(scores[idx])
+            sim = max(0.0, min(1.0, sim))
+            cursor = self._conn.execute(
+                "SELECT name FROM entities WHERE faiss_id = ?", (int(idx),)
+            )
+            row = cursor.fetchone()
+            if row:
+                results.append((row[0], round(sim, 4)))
+
+        return results
+
+        return results
+
+    def save(self) -> None:
+        """持久化 FAISS 索引到磁盘"""
+        if self._index.ntotal == 0:
+            return
+        logger.info("持久化 FAISS 索引 (%d 个向量)", self._index.ntotal)
+        faiss.write_index(self._index, str(self._index_path))
+        self._conn.commit()
+
+    def clear(self) -> None:
+        """清空全部数据：删除磁盘上的 index 和 db 文件"""
+        self._conn.close()
+        for path in [self._index_path, self._db_path]:
+            if path.exists():
+                path.unlink()
+        logger.info("实体向量缓存已清空 (%s)", self._data_dir)
+
+    def close(self) -> None:
+        """关闭数据库连接"""
+        self._conn.close()
 
 
 class GraphRetriever:
@@ -28,9 +260,17 @@ class GraphRetriever:
     """
 
     def __init__(self):
-        # 缓存：全量实体名称及其 embedding，避免重复调用 API
-        self._entity_embeddings_cache: list[tuple[str, list[float]]] | None = None
-        self._entity_embeddings_node_count: int = 0
+        self._kg_dir = settings.project_root / settings.kg_data_dir
+        self._entity_store = EntityEmbeddingStore(self._kg_dir)
+
+    def clear_entity_cache(self) -> None:
+        """清除实体向量缓存，删除磁盘文件，下次搜索时自动重建
+
+        在文档删除导致图谱实体变更后调用，确保 FAISS 索引与图谱一致。
+        """
+        logger.info("清除实体向量缓存")
+        self._entity_store.clear()
+        self._entity_store = EntityEmbeddingStore(self._kg_dir)
 
     def search(
         self,
@@ -68,12 +308,13 @@ class GraphRetriever:
         # Step 2: Entity Linking — 在图谱中定位实体
         seed_entities = self._link_entities(extracted_entities, store)
         if not seed_entities:
-            logger.info("未在图谱中找到匹配实体")
+            logger.info("实体链接失败: 未在 %d 个实体中找到匹配", store.node_count)
             return "", []
 
         logger.info("实体链接成功: %s", seed_entities)
 
-        # Step 3: 子图提取
+        # Step 3: 子图提取 (BFS N-hop)
+        logger.info("Step 3 — 子图提取: 种子=%s, hops=%d", seed_entities, hops)
         subgraph = store.get_subgraph(seed_entities, hops=hops)
         if subgraph.number_of_nodes() == 0:
             logger.info("子图为空")
@@ -99,6 +340,7 @@ class GraphRetriever:
     ) -> list[str]:
         """Step 1: LLM 从问题中抽取关键实体"""
         try:
+            logger.info("Step 1 — LLM 实体抽取 (query='%s')", query[:80])
             llm = create_fast_llm()
             prompt = KG_RETRIEVE_ENTITY_EXTRACT_USER.format(
                 query=query, max_entities=max_entities
@@ -160,7 +402,6 @@ class GraphRetriever:
         # 3) 批量语义兜底（一次 embedding 批量调用来处理所有未匹配实体）
         if need_semantic:
             logger.info("精确匹配未命中的实体: %s，尝试语义匹配", need_semantic)
-            # 限制语义搜候选数量，避免全部 552 个逐个调用
             sem_results = self._semantic_entity_search_batch(
                 need_semantic, store, top_candidates=50
             )
@@ -168,6 +409,45 @@ class GraphRetriever:
                 linked.add(name)
 
         return list(linked)[:10]
+
+    # ── 语义搜索（FAISS + SQLite）─────────────────────────
+
+    def _sync_entity_index(self, store: GraphStore, embedder: Any) -> None:
+        """确保 FAISS 索引与图谱中的实体保持同步
+
+        当图谱节点数量发生变化时，全量重建 FAISS 索引。
+        同步状态持久化在 SQLite 中，跨进程/重启有效。
+        分批调用 embedding API，避免一次性传输过多数据导致超时。
+        """
+        all_entities = store.get_all_entities()
+        if not all_entities:
+            return
+
+        entity_names = [e["name"] for e in all_entities]
+        current_count = store.node_count
+        stored_count = self._entity_store.get_synced_count()
+
+        if self._entity_store.size > 0 and current_count == stored_count:
+            return  # 已同步
+
+        logger.info(
+            "图谱节点数变更 (磁盘:%d → 当前:%d)，重建实体向量索引 (%d 个实体)",
+            stored_count, current_count, len(entity_names),
+        )
+
+        # 分批获取 embedding，避免单次 API 调用数据量过大导致超时
+        BATCH_SIZE = 32
+        all_embeddings: list[list[float]] = []
+        for i in range(0, len(entity_names), BATCH_SIZE):
+            batch = entity_names[i : i + BATCH_SIZE]
+            batch_embs = embedder.embed_documents(batch)
+            all_embeddings.extend(batch_embs)
+            progress = min(i + BATCH_SIZE, len(entity_names))
+            logger.info("实体 embedding 进度: %d/%d", progress, len(entity_names))
+
+        # 全量重建 FAISS + SQLite
+        self._entity_store.rebuild(entity_names, all_embeddings)
+        self._entity_store.save()
 
     def _semantic_entity_search_batch(
         self,
@@ -177,16 +457,16 @@ class GraphRetriever:
     ) -> list[str]:
         """批量语义实体匹配
 
-        一次性获取所有 entity 名称和 embedding，只做本地余弦相似度计算，
-        避免对 552 个实体逐个调用 embedding API。
+        使用 FAISS HNSW 索引进行高效的近似最近邻搜索，
+        替代原 O(n) 的全量余弦相似度遍历。
 
         Args:
             queries: 待匹配的实体名称列表
             store: 图存储实例
-            top_candidates: 候选实体数量上限（按名称长度预筛选）
+            top_candidates: （保留参数，FAISS 使用精确的 top_k 而非预筛选）
 
         Returns:
-            匹配到的实体名称列表
+            匹配到的实体名称列表（cosine >= 0.7）
         """
         all_entities = store.get_all_entities()
         if not all_entities:
@@ -195,54 +475,25 @@ class GraphRetriever:
         try:
             embedder = get_embedding_client()
 
-            # Step A: 批量获取 query 的 embedding（一次 API 调用）
+            # Step A: 批量获取 query 的 embedding（注意：dashscope SDK 超时固定 300s）
+            logger.info("Semantic Step A — 获取 query embedding: %d 个查询", len(queries))
             query_embs = embedder.embed_documents(queries)
 
-            # Step B: 检查/更新实体 embedding 缓存
-            entity_names = [e["name"] for e in all_entities]
-            current_count = store.node_count
-            if (self._entity_embeddings_cache is None or
-                    current_count != self._entity_embeddings_node_count):
-                # 缓存过期或不存在：批量获取所有实体的 embedding
-                logger.info("构建实体 embedding 缓存 (%d 个实体)", len(entity_names))
-                # 如果实体太多，只取 top_candidates 个（按名称长度预估相关性）
-                candidate_names = entity_names[:top_candidates]
-                candidate_embs = embedder.embed_documents(candidate_names)
-                self._entity_embeddings_cache = list(zip(candidate_names, candidate_embs))
-                self._entity_embeddings_node_count = current_count
+            # Step B: 确保 FAISS 索引已同步
+            self._sync_entity_index(store, embedder)
 
-            # Step C: 本地计算余弦相似度（无 API 调用，极快）
+            # Step C: FAISS HNSW 近似搜索
+            logger.info("Step C — FAISS 搜索 (%d 个查询向量)", len(query_embs))
             results: set[str] = set()
-            cached_names = [name for name, _ in self._entity_embeddings_cache]
-            cached_embs = [emb for _, emb in self._entity_embeddings_cache]
+            for i, query_emb in enumerate(query_embs):
+                matches = self._entity_store.search(query_emb, top_k=5)
+                logger.info("FAISS 搜索第 %d 个查询返回 %d 个结果", i, len(matches))
+                for name, score in matches:
+                    if score >= 0.7:
+                        logger.debug("语义匹配: score=%.2f → '%s'", score, name)
+                        results.add(name)
 
-            # 预计算 entity embedding 的范数
-            norms = [
-                sum(a * a for a in emb) ** 0.5 if emb else 0.0
-                for emb in cached_embs
-            ]
-
-            for i, (query, query_emb) in enumerate(zip(queries, query_embs)):
-                q_norm = sum(a * a for a in query_emb) ** 0.5
-                if q_norm == 0:
-                    continue
-
-                best_score = -1.0
-                best_name: str | None = None
-                for j, (ent_name, ent_emb) in enumerate(self._entity_embeddings_cache):
-                    if norms[j] == 0:
-                        continue
-                    dot = sum(a * b for a, b in zip(query_emb, ent_emb))
-                    score = dot / (q_norm * norms[j])
-                    if score > best_score:
-                        best_score = score
-                        best_name = ent_name
-
-                if best_name and best_score >= 0.7:
-                    logger.debug("语义匹配: '%s' → '%s' (score=%.2f)",
-                                  query, best_name, best_score)
-                    results.add(best_name)
-
+            logger.info("Step C 完成，语义匹配结果: %s", list(results))
             return list(results)
 
         except Exception as e:
