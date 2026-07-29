@@ -31,8 +31,8 @@ class DocumentIndexer:
         logger.info("开始解析文档: %s", filename)
         texts = load_document(file_bytes, filename)
 
-        # Step 2: 分块
-        logger.info("开始分块: %s (%d 个片段)", filename, len(texts))
+        # Step 2: 分块（按文件类型自动选择差异化分块参数）
+        logger.info("开始分块: %s (%d 个片段, type=%s)", filename, len(texts), file_type)
         documents = chunk_texts(
             texts,
             metadata={
@@ -40,6 +40,7 @@ class DocumentIndexer:
                 "filename": filename,
                 "file_type": file_type,
             },
+            file_type="." + file_type,
         )
 
         # Step 3: 向量化入库

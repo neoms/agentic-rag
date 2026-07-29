@@ -33,20 +33,31 @@ def create_chunker(
 def chunk_texts(
     texts: list[str],
     metadata: dict | None = None,
+    file_type: str | None = None,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
     """将文本列表分块为 Document 列表
 
+    支持按文件类型差异化分块参数。若指定了 file_type 且未显式传入
+    chunk_size/chunk_overlap，则自动从 settings.chunk_params_by_type 中
+    查找对应参数；未匹配时回退到 settings.chunk_size / chunk_overlap。
+
     Args:
         texts: 文本片段列表
         metadata: 每个文档块的元数据
-        chunk_size: 块大小
-        chunk_overlap: 重叠大小
+        file_type: 文件扩展名（含点号，如 ".pdf"），用于选择分块参数
+        chunk_size: 显式指定块大小（优先级最高）
+        chunk_overlap: 显式指定重叠大小（优先级最高）
 
     Returns:
         Document 对象列表
     """
+    if file_type and chunk_size is None and chunk_overlap is None:
+        params = settings.chunk_params_by_type.get(file_type)
+        if params:
+            chunk_size, chunk_overlap = params
+
     chunker = create_chunker(chunk_size, chunk_overlap)
     base_metadata = metadata or {}
 

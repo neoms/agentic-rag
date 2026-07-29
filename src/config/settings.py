@@ -1,5 +1,6 @@
 """应用配置中心 - 基于 Pydantic Settings 管理所有配置项"""
 
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,17 @@ class Settings(BaseSettings):
     # ========== 文档分块 ==========
     chunk_size: int = 500
     chunk_overlap: int = 100
+    # 按文件类型差异化分块参数 (JSON: {"扩展名": [chunk_size, chunk_overlap]})
+    chunk_config_by_type: str = '{"pdf": [800, 200], "md": [500, 100], "txt": [500, 100]}'
+
+    @property
+    def chunk_params_by_type(self) -> dict[str, tuple[int, int]]:
+        """解析 chunk_config_by_type JSON 为 {ext: (size, overlap)} 字典"""
+        try:
+            raw = json.loads(self.chunk_config_by_type)
+            return {k: tuple(v) for k, v in raw.items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
 
     # ========== 检索 ==========
     retrieval_top_k: int = 20
