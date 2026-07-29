@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = 100
     # 按文件类型差异化分块参数 (JSON: {"扩展名": [chunk_size, chunk_overlap]})
     chunk_config_by_type: str = '{"pdf": [800, 200], "md": [500, 100], "txt": [500, 100]}'
+    # Tokenizer 编码（用于 token 计数分块，设为空字符串则回退到 len()）
+    tokenizer_encoding: str = "cl100k_base"
 
     @property
     def chunk_params_by_type(self) -> dict[str, tuple[int, int]]:

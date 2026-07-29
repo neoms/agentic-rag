@@ -1,11 +1,40 @@
-"""文本分块器 - 基于 RecursiveCharacterTextSplitter"""
+"""文本分块器 - 基于 RecursiveCharacterTextSplitter
+
+使用 tiktoken 进行 Token 计数，使 chunk_size 真正代表"最大 Token 数"，
+而非字符数。对中英文混合内容的分块精度显著优于 len()。
+"""
 
 import logging
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from functools import lru_cache
+
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_token_length_function() -> callable:
+    """获取 token 计数函数
+
+    优先使用 tiktoken 编码，若编码名称为空或加载失败则回退到 len()。
+    结果缓存在模块级，避免重复加载 tokenizer。
+    """
+    encoding_name = settings.tokenizer_encoding
+    if not encoding_name:
+        logger.info("tokenizer_encoding 为空，回退到字符计数 len()")
+        return len
+
+    try:
+        import tiktoken
+        encoding = tiktoken.get_encoding(encoding_name)
+        logger.info("使用 tiktoken 编码: %s", encoding_name)
+        return lambda text: len(encoding.encode(text))
+    except Exception as e:
+        logger.warning("加载 tiktoken 编码 %s 失败: %s，回退到 len()", encoding_name, e)
+        return len
 
 
 def create_chunker(
@@ -15,8 +44,8 @@ def create_chunker(
     """创建文本分块器
 
     Args:
-        chunk_size: 块大小，默认 500
-        chunk_overlap: 重叠大小，默认 100
+        chunk_size: 块大小（Token 数），默认 500
+        chunk_overlap: 重叠大小（Token 数），默认 100
 
     Returns:
         RecursiveCharacterTextSplitter 实例
@@ -24,7 +53,7 @@ def create_chunker(
     return RecursiveCharacterTextSplitter(
         chunk_size=chunk_size or settings.chunk_size,
         chunk_overlap=chunk_overlap or settings.chunk_overlap,
-        length_function=len,
+        length_function=_get_token_length_function(),
         separators=["\n\n", "\n", "。", ".", " ", ""],
         is_separator_regex=False,
     )
