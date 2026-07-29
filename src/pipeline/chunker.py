@@ -70,5 +70,11 @@ def chunk_texts(
             doc = Document(page_content=chunk, metadata=dict(base_metadata))
             all_docs.append(doc)
 
-    logger.info("分块完成：%d 段文本 → %d 个文档块", len(texts), len(all_docs))
+    # 增强元数据：块序号和总数
+    total = len(all_docs)
+    for i, doc in enumerate(all_docs):
+        doc.metadata["chunk_index"] = i
+        doc.metadata["total_chunks"] = total
+
+    logger.info("分块完成：%d 段文本 → %d 个文档块", len(texts), total)
     return all_docs

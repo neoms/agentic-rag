@@ -2,6 +2,7 @@
 
 import uuid
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from src.pipeline.loader import load_document
 from src.pipeline.chunker import chunk_texts
@@ -32,14 +33,20 @@ class DocumentIndexer:
         texts = load_document(file_bytes, filename)
 
         # Step 2: 分块（按文件类型自动选择差异化分块参数）
-        logger.info("开始分块: %s (%d 个片段, type=%s)", filename, len(texts), file_type)
+        base_metadata = {
+            "doc_id": doc_id,
+            "filename": filename,
+            "file_type": file_type,
+            "size_bytes": len(file_bytes),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info(
+            "开始分块: %s (%d 个片段, type=%s, size=%d)",
+            filename, len(texts), file_type, len(file_bytes),
+        )
         documents = chunk_texts(
             texts,
-            metadata={
-                "doc_id": doc_id,
-                "filename": filename,
-                "file_type": file_type,
-            },
+            metadata=base_metadata,
             file_type="." + file_type,
         )
 
