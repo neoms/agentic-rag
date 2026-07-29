@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 from typing import Optional
 from langchain_core.documents import Document
-from PyPDF2 import PdfReader
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import LTTextContainer, LAParams
 import markdown
 
 from src.config.settings import settings
@@ -48,13 +49,34 @@ def detect_file_type(file_bytes: bytes) -> Optional[str]:
 
 
 def load_pdf(file_bytes: bytes, filename: str) -> list[str]:
-    """解析 PDF 文件，按页返回文本列表"""
-    reader = PdfReader(io.BytesIO(file_bytes))
-    pages = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text()
-        if text and text.strip():
-            pages.append(text.strip())
+    """使用 pdfminer.six 解析 PDF 文件，按页返回文本列表
+
+    通过布局分析保留页面内文本的阅读顺序，特别适合含有多栏、
+    CJK 文字或复杂排版的 PDF。
+    """
+    laparams = LAParams(
+        detect_vertical=True,       # 检测竖排文字（CJK 需要）
+        all_texts=True,             # 提取所有文本层
+        line_margin=0.5,            # 行间距阈值
+        char_margin=2.0,            # 字符间距阈值
+        word_margin=0.1,            # 词间距阈值
+    )
+    pages: list[str] = []
+    try:
+        for page_layout in extract_pages(io.BytesIO(file_bytes), laparams=laparams):
+            texts: list[str] = []
+            for element in page_layout:
+                if isinstance(element, LTTextContainer):
+                    text = element.get_text().strip()
+                    if text:
+                        texts.append(text)
+            page_text = "\n".join(texts).strip()
+            if page_text:
+                pages.append(page_text)
+    except Exception as e:
+        logger.warning("pdfminer 解析失败 %s: %s，返回空列表", filename, e)
+        return []
+
     logger.info("PDF %s 解析出 %d 页文本", filename, len(pages))
     return pages
 
