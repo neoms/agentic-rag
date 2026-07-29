@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     # ========== 文件上传 ==========
     max_upload_size_mb: int = 10
     allowed_extensions: str = "pdf,md,txt,docx,csv"
+    large_file_threshold_mb: int = 5  # 超过此大小（MB）的文件写入临时文件后处理，减少内存占用
 
     # ========== 内容校验 ==========
     min_content_chars: int = 20          # 解析后最少有效字符数

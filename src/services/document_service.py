@@ -1,9 +1,17 @@
-"""文档服务层 - 文档上传、查询、删除的业务逻辑"""
+"""文档服务层 - 文档上传、查询、删除的业务逻辑
+
+支持大文件流式处理：超过 large_file_threshold_mb 的文件，
+先保存到临时目录再后台处理，避免大量内存占用。
+"""
 
 import logging
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+
+from src.config.settings import settings
 from src.pipeline.indexer import document_indexer
 from src.models.document import (
     DocumentInfo,
@@ -15,6 +23,8 @@ from src.models.document import (
 
 logger = logging.getLogger(__name__)
 
+TEMP_UPLOAD_DIR = "data/temp_uploads"
+
 
 class DocumentService:
     """文档管理服务"""
@@ -22,6 +32,40 @@ class DocumentService:
     def __init__(self):
         self._tasks: dict[str, dict] = {}
         self._lock = threading.Lock()
+
+    @property
+    def _temp_dir(self) -> Path:
+        """临时文件目录"""
+        path = settings.project_root / TEMP_UPLOAD_DIR
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _is_large_file(self, size_bytes: int) -> bool:
+        """判断文件是否超过大文件阈值"""
+        return size_bytes > settings.large_file_threshold_mb * 1024 * 1024
+
+    def _save_to_temp(self, file_bytes: bytes, filename: str) -> Path:
+        """将文件保存到临时目录
+
+        Returns:
+            临时文件路径
+        """
+        suffix = Path(filename).suffix or ".tmp"
+        tmp_name = f"{uuid.uuid4().hex}{suffix}"
+        tmp_path = self._temp_dir / tmp_name
+        with open(tmp_path, "wb") as f:
+            f.write(file_bytes)
+        logger.debug("大文件已写入临时路径: %s (%d bytes)", tmp_path, len(file_bytes))
+        return tmp_path
+
+    def _cleanup_temp(self, tmp_path: Path):
+        """清理临时文件"""
+        try:
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink()
+                logger.debug("临时文件已清理: %s", tmp_path)
+        except OSError as e:
+            logger.warning("临时文件清理失败 %s: %s", tmp_path, e)
 
     def _init_task(self, filename: str) -> tuple[str, str]:
         """创建任务记录并返回 (task_id, doc_id)"""
@@ -41,15 +85,34 @@ class DocumentService:
             }
         return task_id, doc_id
 
-    def _background_process(self, file_bytes: bytes, filename: str, doc_id: str, task_id: str):
-        """后台线程：执行文档索引"""
+    def _background_process(
+        self,
+        file_source: bytes | Path,
+        filename: str,
+        doc_id: str,
+        task_id: str,
+    ):
+        """后台线程：执行文档索引
+
+        Args:
+            file_source: 文件内容（bytes）或临时文件路径（Path）
+        """
         logger.info("[background] 开始处理文档: %s, task_id=%s", filename, task_id)
         with self._lock:
             self._tasks[task_id]["status"] = TaskStatus.PROCESSING
             self._tasks[task_id]["message"] = "正在解析和索引文档..."
 
+        tmp_path: Path | None = file_source if isinstance(file_source, Path) else None
         try:
+            # 从临时文件读取（若 file_source 是 Path）
+            if isinstance(file_source, Path):
+                with open(file_source, "rb") as f:
+                    file_bytes = f.read()
+            else:
+                file_bytes = file_source
+
             result = document_indexer.ingest(file_bytes, filename)
+
             with self._lock:
                 self._tasks[task_id]["status"] = TaskStatus.COMPLETED
                 self._tasks[task_id]["message"] = (
@@ -65,18 +128,37 @@ class DocumentService:
                 self._tasks[task_id]["message"] = f"处理失败: {str(e)}"
                 self._tasks[task_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
             logger.exception("[background] 文档处理失败: %s, task_id=%s", filename, task_id)
+        finally:
+            # 清理临时文件
+            if tmp_path:
+                self._cleanup_temp(tmp_path)
 
     def submit_upload_task(self, file_bytes: bytes, filename: str) -> TaskSubmitResponse:
         """提交文档上传任务（异步后台处理）
 
+        大文件自动保存到临时目录后后台处理，释放内存。
+        小文件直接传递 bytes 避免磁盘 I/O。
+
         立即返回任务信息，实际处理在后台线程进行。
         """
-        logger.info("[document_service] 提交后台任务: %s, size=%d bytes", filename, len(file_bytes))
+        size = len(file_bytes)
+        logger.info("[document_service] 提交后台任务: %s, size=%d bytes", filename, size)
         task_id, doc_id = self._init_task(filename)
+
+        is_large = self._is_large_file(size)
+        if is_large:
+            # 大文件：保存到临时文件，传递路径
+            tmp_path = self._save_to_temp(file_bytes, filename)
+            file_source: bytes | Path = tmp_path
+            # 释放内存引用
+            del file_bytes
+            logger.info("大文件已暂存到临时文件: %s (%.1f MB)", tmp_path, size / 1024 / 1024)
+        else:
+            file_source = file_bytes
 
         thread = threading.Thread(
             target=self._background_process,
-            args=(file_bytes, filename, doc_id, task_id),
+            args=(file_source, filename, doc_id, task_id),
             daemon=True,
         )
         thread.start()
