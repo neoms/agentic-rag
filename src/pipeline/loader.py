@@ -8,13 +8,17 @@ from typing import Optional
 from langchain_core.documents import Document
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextContainer, LAParams
-import markdown
 
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-HTML_CLEANER = re.compile(r"<[^>]+>")
+# Markdown 内联标记清理
+_INLINE_FORMAT = re.compile(r"\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|~~(.+?)~~")
+_INLINE_CODE = re.compile(r"(?<!`)`(?!``)([^`]+)`")  # 仅匹配单反引号，避免匹配 ``` 代码 fence
+_IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\([^)]+\)")
+_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_HR_PATTERN = re.compile(r"^-{3,}\s*$|^\*{3,}\s*$", re.MULTILINE)
 
 # Unicode 范围：CJK 统一表意文字
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
@@ -81,16 +85,44 @@ def load_pdf(file_bytes: bytes, filename: str) -> list[str]:
     return pages
 
 
+def _refine_md_text(raw: str) -> str:
+    """清理 Markdown 内联标记，保留结构标记
+
+    保留标题、列表、代码块、引用等结构标记（#、-、```、>），
+    仅去除内联格式（粗体/斜体/删除线/行内代码）并转换链接和图片。
+    """
+    # 去除行内代码标记
+    text = _INLINE_CODE.sub(r"\1", raw)
+    # 去除粗体/斜体/删除线（保留内容）
+    text = _INLINE_FORMAT.sub(
+        lambda m: next(g for g in m.groups() if g is not None), text
+    )
+    # 图片 → [image: alt]
+    text = _IMAGE_PATTERN.sub(r"[image: \1]", text)
+    # 链接 → text (url)
+    text = _LINK_PATTERN.sub(r"\1 (\2)", text)
+    return text
+
+
 def load_markdown(file_bytes: bytes, filename: str) -> list[str]:
-    """解析 Markdown 文件，返回纯文本"""
+    """解析 Markdown 文件，保留结构信息
+
+    使用 mistune 解析 Markdown，保留标题、列表、代码块、引用等
+    结构标记（#、-、```、>），仅去除内联格式。这样 chunker 可以
+    利用标题作为自然分块边界。
+    """
     md_text = file_bytes.decode("utf-8", errors="replace")
-    html = markdown.markdown(md_text)
-    plain_text = HTML_CLEANER.sub("", html)
-    # 按双换行分割段落
-    paragraphs = [p.strip() for p in plain_text.split("\n\n") if p.strip()]
+    # 先清理内联标记
+    plain = _refine_md_text(md_text)
+    # 将水平线作为段落分隔符
+    plain = _HR_PATTERN.sub("\n\n---\n\n", plain)
+
+    # 按双换行分割为段落
+    paragraphs = [p.strip() for p in plain.split("\n\n") if p.strip()]
     if not paragraphs:
-        paragraphs = [plain_text]
-    logger.info("Markdown %s 解析出 %d 段落", filename, len(paragraphs))
+        paragraphs = [plain]
+
+    logger.info("Markdown %s 解析出 %d 段落（含结构标记）", filename, len(paragraphs))
     return paragraphs
 
 
