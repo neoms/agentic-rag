@@ -16,12 +16,16 @@ const fileTypeColors: Record<string, string> = {
   pdf: 'bg-red-400/10 text-red-400 border-red-400/20',
   md: 'bg-blue-400/10 text-blue-400 border-blue-400/20',
   txt: 'bg-slate-400/10 text-slate-400 border-slate-400/20',
+  docx: 'bg-indigo-400/10 text-indigo-400 border-indigo-400/20',
+  csv: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
 }
 
 const fileTypeIcons: Record<string, string> = {
   pdf: 'PDF',
   md: 'MD',
   txt: 'TXT',
+  docx: 'DOCX',
+  csv: 'CSV',
 }
 
 function formatDate(dateStr: string): string {
@@ -66,7 +70,7 @@ function formatSize(bytes: number): string {
     >
       <Database class="w-12 h-12 mb-3 text-slate-600" />
       <p class="text-sm">暂无已索引文档</p>
-      <p class="text-xs mt-1">上传 PDF、Markdown 或 TXT 文件开始构建知识库</p>
+      <p class="text-xs mt-1">上传 PDF、Markdown、TXT、DOCX 或 CSV 文件开始构建知识库</p>
     </div>
 
     <!-- 加载中 -->

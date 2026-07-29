@@ -48,6 +48,28 @@ export interface SSEEvent {
 }
 
 // ===== 文档模型 =====
+export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed'
+
+export interface TaskInfo {
+  task_id: string
+  doc_id: string
+  filename: string
+  status: TaskStatus
+  message: string
+  created_at: string
+  completed_at: string | null
+  chunk_count: number
+}
+
+export interface TaskSubmitResponse {
+  success: boolean
+  task_id: string
+  doc_id: string
+  filename: string
+  status: TaskStatus
+  message: string
+}
+
 export interface DocumentUploadResponse {
   success: boolean
   doc_id: string

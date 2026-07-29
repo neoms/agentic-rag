@@ -56,7 +56,7 @@ class GraphStore:
         aliases: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """添加或更新实体节点
+        """添加或更新实体节点（公开方法，委托给 _add_entity_impl）
 
         Args:
             name: 实体名称（唯一标识）
@@ -65,6 +65,17 @@ class GraphStore:
             aliases: 别名列表
             metadata: 额外元数据
         """
+        self._add_entity_impl(name, entity_type, doc_id, aliases, metadata)
+
+    def _add_entity_impl(
+        self,
+        name: str,
+        entity_type: str = "unknown",
+        doc_id: str = "",
+        aliases: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """add_entity 的无锁实现，供 bulk_import 内部调用"""
         if name not in self._graph:
             self._graph.add_node(
                 name,
@@ -74,7 +85,6 @@ class GraphStore:
                 metadata=metadata or {},
             )
         else:
-            # 更新已有节点
             node = self._graph.nodes[name]
             if entity_type != "unknown" and node.get("type") == "unknown":
                 node["type"] = entity_type
@@ -99,7 +109,7 @@ class GraphStore:
         doc_id: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """添加或更新关系边
+        """添加或更新关系边（公开方法，委托给 _add_relation_impl）
 
         Args:
             source: 源实体名称
@@ -109,14 +119,100 @@ class GraphStore:
             doc_id: 来源文档 ID
             metadata: 额外元数据
         """
-        self._graph.add_edge(
-            source,
-            target,
-            relation=relation,
-            weight=weight,
-            doc_ids=[doc_id] if doc_id else [],
-            metadata=metadata or {},
-        )
+        self._add_relation_impl(source, target, relation, weight, doc_id, metadata)
+
+    def _add_relation_impl(
+        self,
+        source: str,
+        target: str,
+        relation: str,
+        weight: float = 1.0,
+        doc_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """add_relation 的无锁实现 + 跨文档 doc_ids 合并
+
+        当边已存在时合并 doc_ids 而非覆盖，确保跨文档来源信息不丢失。
+        """
+        new_doc_ids = [doc_id] if doc_id else []
+
+        if self._graph.has_edge(source, target):
+            existing = self._graph.edges[source, target]
+            existing_doc_ids = existing.get("doc_ids", [])
+            for d in new_doc_ids:
+                if d not in existing_doc_ids:
+                    existing_doc_ids.append(d)
+            existing.update(
+                relation=relation,
+                weight=weight,
+                doc_ids=existing_doc_ids,
+                metadata=metadata or {},
+            )
+        else:
+            self._graph.add_edge(
+                source,
+                target,
+                relation=relation,
+                weight=weight,
+                doc_ids=new_doc_ids,
+                metadata=metadata or {},
+            )
+
+    # ── 批量导入 ──────────────────────────────────────────
+
+    def bulk_import(
+        self,
+        doc_id: str,
+        entities: list[dict[str, Any]],
+        relations: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        """原子化批量导入实体和关系（单次 save，无需逐条加锁）
+
+        跨文档名称相同的实体/关系自动合并 doc_ids 来源信息。
+        关系两端如不在图中则自动创建缺失的实体节点。
+
+        Args:
+            doc_id: 来源文档 ID
+            entities: [{"name": ..., "type": ..., "aliases": ..., "metadata": ...}, ...]
+            relations: [{"source": ..., "target": ..., "relation": ...}, ...]
+
+        Returns:
+            (entity_count, relation_count)
+        """
+        entity_count = 0
+        relation_count = 0
+
+        for ent in entities:
+            name = ent.get("name", "").strip()
+            if not name:
+                continue
+            self._add_entity_impl(
+                name=name,
+                entity_type=ent.get("type", "unknown"),
+                doc_id=doc_id,
+                aliases=ent.get("aliases", []),
+                metadata=ent.get("metadata", {}),
+            )
+            entity_count += 1
+
+        for rel in relations:
+            src = rel.get("source", "").strip()
+            dst = rel.get("target", "").strip()
+            rel_type = rel.get("relation", "related_to").strip()
+            if not src or not dst:
+                continue
+            # 自动补全图上缺失的关系端节点
+            if not self._graph.has_node(src):
+                self._add_entity_impl(name=src, entity_type="unknown", doc_id=doc_id)
+            if not self._graph.has_node(dst):
+                self._add_entity_impl(name=dst, entity_type="unknown", doc_id=doc_id)
+            self._add_relation_impl(
+                source=src, target=dst, relation=rel_type, doc_id=doc_id,
+            )
+            relation_count += 1
+
+        self.save()
+        return entity_count, relation_count
 
     # ── 查询操作 ──────────────────────────────────────────
 

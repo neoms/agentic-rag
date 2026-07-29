@@ -4,7 +4,18 @@ import { useDocuments } from '../composables/useDocuments'
 import DocumentUpload from '../components/documents/DocumentUpload.vue'
 import DocumentList from '../components/documents/DocumentList.vue'
 
-const { documents, loading, uploading, uploadError, fetchDocuments, upload, remove } = useDocuments()
+const {
+  documents,
+  loading,
+  uploading,
+  uploadError,
+  uploadTaskStatus,
+  uploadTaskMessage,
+  fetchDocuments,
+  upload,
+  remove,
+  clearUploadError,
+} = useDocuments()
 
 onMounted(() => {
   fetchDocuments()
@@ -25,7 +36,7 @@ function handleDelete(docId: string) {
       <!-- 页面标题 -->
       <div class="mb-8">
         <h1 class="text-xl font-bold text-slate-100">知识库管理</h1>
-        <p class="text-sm text-slate-500 mt-1">上传文档构建知识库，支持 PDF、Markdown、TXT 格式</p>
+        <p class="text-sm text-slate-500 mt-1">上传文档构建知识库，支持 PDF、Markdown、TXT、DOCX、CSV 格式</p>
       </div>
 
       <!-- 上传区 -->
@@ -33,7 +44,10 @@ function handleDelete(docId: string) {
         <DocumentUpload
           :uploading="uploading"
           :error="uploadError"
+          :task-status="uploadTaskStatus"
+          :task-message="uploadTaskMessage"
           @upload="handleUpload"
+          @clear-error="clearUploadError"
         />
       </div>
 

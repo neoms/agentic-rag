@@ -67,6 +67,9 @@ uv sync
 
 # 启动应用
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 或直接运行入口文件（效果等同）
+uv run python main.py
 ```
 
 启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
@@ -390,13 +393,17 @@ agentic-rag/
 | `dashscope` | 百炼 LLM / Embedding / Rerank SDK |
 | `langsmith` | LLM 追踪与评估 |
 | `ddgs` | DuckDuckGo 网页搜索（联网搜索降级） |
-| `pypdf2` + `markdown` | 文档解析（PDF/MD/TXT） |
+| `pdfminer-six` + `python-docx` + `mistune` | 文档解析（PDF/DOCX/MD/TXT/CSV） |
 | `jieba` | 中文分词（BM25 检索） |
 | `rank-bm25` | BM25 关键词检索算法 |
 | `sentence-transformers` | 语义编码（辅助） |
 | `pydantic-settings` | 配置管理 |
 | `sse-starlette` | SSE 流式输出 |
 | `python-multipart` | 文件上传支持 |
+| `tenacity` | LLM 调用指数退避重试 |
+| `tiktoken` | Token 计数与分块 |
+| `python-dotenv` | 环境变量加载 |
+| `mistune` | Markdown 解析 |
 
 ### 前端 (Node.js)
 

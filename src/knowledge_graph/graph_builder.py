@@ -29,7 +29,7 @@ class GraphBuilder:
     流程:
         1. 将文档分块按 batch_size 分组
         2. 多线程并发调用 LLM 抽取实体关系
-        3. 串行写入 GraphStore（避免线程安全问题）
+        3. 全量收集后调用 store.bulk_import() 原子化写入（单次 save）
         4. 持久化到 JSON
     """
 
@@ -63,8 +63,6 @@ class GraphBuilder:
         if max_workers is None:
             max_workers = getattr(settings, "kg_max_concurrency", 3)
 
-        total_entities = 0
-        total_relations = 0
         store_before = store.node_count
 
         # 1. 准备批次数据
@@ -109,48 +107,30 @@ class GraphBuilder:
                                    batch_idx + 1, total_batches, e)
                     results[batch_idx] = {"entities": [], "relations": []}
 
-        # 3. 串行写入 GraphStore（按批次顺序）
+        # 3. 收集全量数据，单次原子化批量导入
+        all_entities: list[dict[str, Any]] = []
+        all_relations: list[dict[str, Any]] = []
+
         for batch_idx in sorted(results.keys()):
             result = results[batch_idx]
-            entities = result.get("entities", [])
-            relations = result.get("relations", [])
-
-            for ent in entities:
-                name = ent.get("name", "").strip()
-                if not name:
-                    continue
-                store.add_entity(
-                    name=name,
-                    entity_type=ent.get("type", "unknown"),
-                    doc_id=doc_id,
-                    aliases=ent.get("aliases", []),
-                    metadata=ent.get("metadata", {}),
-                )
-                total_entities += 1
-
-            for rel in relations:
+            for ent in result.get("entities", []):
+                if ent.get("name", "").strip():
+                    all_entities.append(ent)
+            for rel in result.get("relations", []):
                 src = rel.get("source", "").strip()
                 dst = rel.get("target", "").strip()
-                rel_type = rel.get("relation", "related_to").strip()
-                if not src or not dst:
-                    continue
-                if src not in store.graph:
-                    store.add_entity(name=src, entity_type="unknown", doc_id=doc_id)
-                if dst not in store.graph:
-                    store.add_entity(name=dst, entity_type="unknown", doc_id=doc_id)
-                store.add_relation(
-                    source=src,
-                    target=dst,
-                    relation=rel_type,
-                    doc_id=doc_id,
-                )
-                total_relations += 1
+                if src and dst:
+                    all_relations.append(rel)
 
-        store.save()
+        entity_count, relation_count = store.bulk_import(
+            doc_id=doc_id,
+            entities=all_entities,
+            relations=all_relations,
+        )
         new_nodes = store.node_count - store_before
         logger.info(
             "图谱构建完成: 新增 %d 实体, %d 关系, 文档=%s",
-            total_entities, total_relations, doc_id,
+            entity_count, relation_count, doc_id,
         )
         return new_nodes
 
