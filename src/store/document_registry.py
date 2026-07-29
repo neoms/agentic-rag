@@ -34,8 +34,8 @@ class DocumentRegistry:
 
     @property
     def _file_path(self) -> Path:
-        """注册表 JSON 文件路径"""
-        return settings.project_root / REGISTRY_FILENAME
+        """注册表 JSON 文件路径（位于 data/ 目录下）"""
+        return settings.project_root / "data" / REGISTRY_FILENAME
 
     def _load(self):
         """从 JSON 文件加载注册表"""
@@ -158,6 +158,14 @@ class DocumentRegistry:
             if doc_id in self._data:
                 self._data[doc_id]["chunk_count"] = chunk_count
                 self._save()
+
+    def clear_all(self) -> None:
+        """清空所有文档注册记录"""
+        with self._lock:
+            self._load()
+            self._data.clear()
+            self._save()
+            logger.info("文档注册表已清空")
 
 
 # 全局单例

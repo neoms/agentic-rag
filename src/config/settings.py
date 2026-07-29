@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-v4"
 
     # ========== ChromaDB ==========
-    chroma_persist_dir: str = "chroma_data"
+    chroma_persist_dir: str = "data/chroma"
 
     # ========== 文档分块 ==========
     chunk_size: int = 500
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     multi_query_num_variations: int = 3  # 生成的查询变体数量
 
     # ========== 知识图谱 ==========
-    kg_data_dir: str = "kg_data"
+    kg_data_dir: str = "data/kg"
     kg_max_hops: int = 2           # 子图提取最大跳数
     kg_max_entities: int = 10      # 单次查询最多提取实体数
     kg_max_concurrency: int = 3    # KG 构建 LLM 并发调用数

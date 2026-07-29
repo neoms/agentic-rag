@@ -23,14 +23,11 @@ venv/
 .DS_Store
 Thumbs.db
 
-# ChromaDB 持久化目录
-chroma_data/
+# 数据目录
+/data/
 
-# KG 持久化目录
-kg_data/
-
-# 文档注册表
-document_registry.json
+# 排除 data/ 下的 .gitkeep（保留目录结构）
+!/data/.gitkeep
 
 # UV
 *.lock.cache/

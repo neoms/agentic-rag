@@ -199,6 +199,15 @@ class VectorStore:
             "count": collection.count(),
         }
 
+    def clear_all(self) -> None:
+        """清空向量库所有数据（删除集合并重置）"""
+        try:
+            self.client.delete_collection(COLLECTION_NAME)
+            logger.info("向量库集合已删除: %s", COLLECTION_NAME)
+        except Exception as e:
+            logger.warning("删除向量库集合失败（可能不存在）: %s", e)
+        self._vector_store = None
+
 
 # 全局单例
 vector_store = VectorStore()
