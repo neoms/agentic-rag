@@ -166,6 +166,31 @@ class VectorStore:
                 doc_map[doc_id]["chunk_count"] += 1
         return list(doc_map.values())
 
+    def find_by_doc_id(self, doc_id: str) -> list[dict]:
+        """通过 doc_id 查找所有文档块元数据"""
+        collection = self._get_or_create_collection()
+        results = collection.get(where={"doc_id": doc_id})
+        metadatas = results.get("metadatas", [])
+        return metadatas
+
+    def find_by_content_hash(self, content_hash: str) -> str | None:
+        """通过 content_hash 查找已存在的 doc_id
+
+        Args:
+            content_hash: 文件 SHA256 哈希
+
+        Returns:
+            doc_id（若存在）或 None
+        """
+        collection = self._get_or_create_collection()
+        results = collection.get(where={"content_hash": content_hash})
+        metadatas = results.get("metadatas", [])
+        if metadatas:
+            doc_id = metadatas[0].get("doc_id")
+            logger.info("发现重复内容: hash=%s, 已有 doc_id=%s", content_hash, doc_id)
+            return doc_id
+        return None
+
     def get_collection_stats(self) -> dict:
         """获取集合统计信息"""
         collection = self._get_or_create_collection()

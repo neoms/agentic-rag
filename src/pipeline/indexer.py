@@ -1,5 +1,6 @@
 """向量化与入库 - 完整的文档摄入管道"""
 
+import hashlib
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -18,13 +19,33 @@ class DocumentIndexer:
     def ingest(self, file_bytes: bytes, filename: str) -> dict:
         """处理并索引单个文档
 
+        内置 SHA256 内容去重：若已有完全相同的文件入库，
+        直接返回已有 doc_id 跳过处理。
+
         Args:
             file_bytes: 文件二进制内容
             filename: 文件名
 
         Returns:
-            {"doc_id": ..., "filename": ..., "chunk_count": ...}
+            {"doc_id": ..., "filename": ..., "chunk_count": ...,
+             "deduplicated": True/False}
         """
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
+
+        # 内容去重：检查是否已存在相同 hash 的文档
+        existing_doc_id = vector_store.find_by_content_hash(content_hash)
+        if existing_doc_id:
+            logger.info(
+                "内容重复，跳过处理: hash=%s, 已有 doc_id=%s, filename=%s",
+                content_hash, existing_doc_id, filename,
+            )
+            return {
+                "doc_id": existing_doc_id,
+                "filename": filename,
+                "chunk_count": 0,
+                "deduplicated": True,
+            }
+
         doc_id = str(uuid.uuid4())
         file_type = Path(filename).suffix.lower().lstrip(".")
 
@@ -38,6 +59,7 @@ class DocumentIndexer:
             "filename": filename,
             "file_type": file_type,
             "size_bytes": len(file_bytes),
+            "content_hash": content_hash,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         logger.info(
@@ -69,6 +91,7 @@ class DocumentIndexer:
             "doc_id": doc_id,
             "filename": filename,
             "chunk_count": count,
+            "deduplicated": False,
         }
 
     def delete_document(self, doc_id: str) -> int:
