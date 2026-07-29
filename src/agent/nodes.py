@@ -1,9 +1,16 @@
-"""LangGraph Agent 节点实现 - 多策略检索、自反思、幻觉检测等"""
+"""LangGraph Agent 节点实现 - 多策略检索节点
+
+生成（generate）和幻觉检测（check_hallucination）已移至独立模块：
+- src/services/generator.py
+- src/services/hallucination_checker.py
+
+此文件仅保留图内执行的检索、排序、评估、重写等节点。
+"""
 
 import logging
 from typing import Any
 
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
 from langgraph.prebuilt import ToolNode
 
@@ -13,20 +20,15 @@ from src.agent.prompts import (
     GRADE_DOCUMENTS_USER,
     REWRITE_QUERY_SYSTEM,
     REWRITE_QUERY_USER,
-    GENERATE_ANSWER_SYSTEM,
-    GENERATE_ANSWER_USER,
-    CHECK_HALLUCINATION_SYSTEM,
-    CHECK_HALLUCINATION_USER,
     HYDE_GENERATE_USER,
     MULTI_QUERY_GENERATE_USER,
 )
 from src.agent.tools import ALL_TOOLS, _duckduckgo_search
-from src.backend.llm import create_llm_client, create_fast_llm, create_strong_llm
+from src.backend.llm import create_llm_client, create_fast_llm
 from src.backend.embedding import get_embedding_client
 from src.backend.reranker import rerank_documents
 from src.store.vector_store import vector_store
 from src.retrieval.bm25 import bm25_retriever
-from src.memory.manager import memory_manager
 from src.config.settings import settings
 from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
 
@@ -167,121 +169,6 @@ def transform_query(state: AgentState) -> dict[str, Any]:
         "rewritten_query": rewritten,
         "iteration_count": iteration_count + 1,
         "agent_path": ["transform_query"],
-    }
-
-
-def generate(state: AgentState) -> dict[str, Any]:
-    """答案生成节点：基于检索到的文档生成回答"""
-    query = state["query"]
-    documents = state.get("documents", [])
-    session_id = state.get("session_id", "default")
-    citation_metadata = state.get("citation_metadata", {})
-
-    if not documents:
-        return {
-            "answer": "未找到相关文档，无法生成回答。请尝试上传相关文档或重新提问。",
-            "agent_path": ["generate (no context)"],
-        }
-
-    logger.info("生成节点: 基于 %d 个文档, %d 个引文条目, 生成回答", len(documents), len(citation_metadata))
-
-    # 使用强模型生成高质量答案
-    llm = create_strong_llm(streaming=state.get("stream", False))
-
-    # 获取对话历史
-    chat_history = memory_manager.get_chat_history_string(session_id)
-
-    # 格式化文档上下文（带段落索引）
-    import re as _re
-    doc_parts: list[str] = []
-    for doc_idx, doc in enumerate(documents[:8], 1):
-        src = doc.metadata.get("filename") or doc.metadata.get("url", "unknown")
-        url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
-        paragraphs = [p.strip() for p in _re.split(r'\n\s*\n', doc.page_content) if p.strip()]
-        if not paragraphs:
-            paragraphs = [doc.page_content]
-        para_lines = []
-        for para_idx, para in enumerate(paragraphs, 1):
-            para_lines.append(f"  [Doc{doc_idx}-Para{para_idx}] {para}")
-        doc_text = "\n\n".join(para_lines)
-        doc_parts.append(f"来源: {src}{url_info}\n内容:\n{doc_text}")
-    docs_text = "\n\n---\n\n".join(doc_parts)
-
-    messages = [
-        HumanMessage(content=GENERATE_ANSWER_SYSTEM),
-        HumanMessage(
-            content=GENERATE_ANSWER_USER.format(
-                query=query,
-                documents=docs_text,
-                chat_history=chat_history or "无历史对话",
-            )
-        ),
-    ]
-
-    if state.get("stream", False):
-        # 流式模式：返回消息用于外部流式处理
-        return {
-            "messages": messages,
-            "agent_path": ["generate (streaming)"],
-        }
-
-    response = llm.invoke(messages)
-    answer = response.content.strip()
-
-    logger.info("生成完成: %d 字符", len(answer))
-
-    return {
-        "answer": answer,
-        "agent_path": ["generate"],
-    }
-
-
-def check_hallucination(state: AgentState) -> dict[str, Any]:
-    """幻觉检测节点：验证生成的答案是否与文档上下文一致"""
-    answer = state.get("answer", "")
-    documents = state.get("documents", [])
-    stream_mode = state.get("stream", False)
-
-    if not answer or not documents:
-        # 流式模式下答案由外部生成，此处仅为路径标记（实际检测在 rag_service 中）
-        if stream_mode and documents:
-            logger.info("幻觉检测节点: 流式模式，标记路径")
-            return {
-                "hallucination_detected": False,
-                "agent_path": ["check_hallucination"],
-            }
-        return {
-            "hallucination_detected": False,
-            "agent_path": ["check_hallucination (skipped)"],
-        }
-
-    logger.info("幻觉检测节点: 验证答案")
-
-    llm = create_fast_llm()
-    docs_text = "\n---\n".join(
-        f"[文档 {i+1}] {doc.page_content[:500]}"
-        for i, doc in enumerate(documents[:8])
-    )
-
-    messages = [
-        HumanMessage(content=CHECK_HALLUCINATION_SYSTEM),
-        HumanMessage(
-            content=CHECK_HALLUCINATION_USER.format(
-                documents=docs_text,
-                answer=answer,
-            )
-        ),
-    ]
-
-    response = llm.invoke(messages)
-    result = response.content.strip().upper()
-    has_hallucination = result == "FAILED"
-
-    logger.info("幻觉检测: %s", "FAILED" if has_hallucination else "PASSED")
-
-    return {
-        "hallucination_detected": has_hallucination,
-        "agent_path": ["check_hallucination"],
     }
 
 
@@ -516,7 +403,6 @@ def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
     return {
         "documents": merged,
         "agent_path": ["merge_retrieval"],
-        "citation_metadata": {},
     }
 
 

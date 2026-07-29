@@ -2,12 +2,13 @@
 
 状态流转图：
     START → retrieve → rerank_documents → grade_documents
-                                            ├── [RELEVANT] → generate → check_hallucination
-                                            │                              ├── [PASSED] → END
-                                            │                              └── [FAILED] → END
+                                            ├── [RELEVANT] → 图结束 → 外部生成
                                             └── [IRRELEVANT] →
-                                                ├── enable_web_search → web_search → generate → ...
+                                                ├── enable_web_search → web_search → 图结束
                                                 └── !enable_web_search → transform_query → retrieve (循环)
+
+生成（generate）和幻觉检测（check_hallucination）已从图中移除，
+由 rag_service 在外部完成流式生成与检测。
 """
 
 import logging
@@ -23,8 +24,6 @@ from src.agent.nodes import (
     rerank_documents_node,
     grade_documents,
     transform_query,
-    generate,
-    check_hallucination,
     web_search_node,
     tool_node,
     bm25_retrieve_node,
@@ -34,19 +33,18 @@ from src.agent.nodes import (
     analyze_kg_intent_node,
     kg_retrieve_node,
 )
-from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
-def should_continue_after_grade(state: AgentState) -> Literal["generate", "transform_query", "web_search"]:
+def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_query", "web_search"]:
     """文档评估后的条件路由
 
-    - 文档相关 → 进入答案生成
-    - 文档不相关 + 文档为空（向量库无匹配）→ 跳过查询重写，走 web_search 或降级生成
+    - 文档相关 → 图结束（由外部 rag_service 负责生成）
+    - 文档不相关 + 文档为空（向量库无匹配）→ 跳过查询重写，走 web_search 或降级结束
     - 文档不相关 + 开启联网搜索 → 联网搜索（降级方案）
     - 文档不相关 + 开启查询重写 + 未超过重试次数 → 查询重写
-    - 其他情况 → 进入生成（降级处理）
+    - 其他情况 → 图结束（降级处理）
     """
     enable_web = state.get("enable_web_search", False)
     enable_transform = state.get("enable_transform_query", True)
@@ -55,18 +53,16 @@ def should_continue_after_grade(state: AgentState) -> Literal["generate", "trans
                 state.get("documents_relevant", False), len(documents), enable_web, enable_transform)
 
     if state.get("documents_relevant", False):
-        logger.info("路由: 文档相关 → generate")
-        return "generate"
+        logger.info("路由: 文档相关 → end (外部生成)")
+        return "end"
 
-    # 检索结果为空 → 查询重写无意义，直接走 web_search 或降级生成
     if not documents:
         if enable_web:
             logger.info("路由: 文档为空 + 联网搜索已开启 → web_search")
             return "web_search"
-        logger.info("路由: 文档为空 → generate (降级)")
-        return "generate"
+        logger.info("路由: 文档为空 → end (降级)")
+        return "end"
 
-    # 向量库有文档但被评估为不相关
     if enable_web:
         logger.info("路由: 文档不相关 + 联网搜索已开启 → web_search")
         return "web_search"
@@ -78,46 +74,14 @@ def should_continue_after_grade(state: AgentState) -> Literal["generate", "trans
         logger.info("路由: 文档不相关 → transform_query (第 %d/%d 次)", iteration + 1, max_iter)
         return "transform_query"
 
-    logger.info("路由: transform_query 已关闭或超过重试次数 → generate (降级)")
-    return "generate"
-
-
-def should_continue_after_hallucination(
-    state: AgentState,
-) -> Literal["generate", "end"]:
-    """幻觉检测后的条件路由
-
-    - 检测到幻觉且未超过重试次数 → 重新生成
-    - 通过或超过重试次数 → 结束
-    """
-    if state.get("hallucination_detected", False):
-        iteration = state.get("iteration_count", 0)
-        max_iter = state.get("max_iterations", 3)
-        if iteration < max_iter:
-            logger.info("路由: 幻觉检测失败 → 重新生成")
-            return "generate"
-    logger.info("路由: 幻觉检测通过 → END")
-    return "end"
-
-
-def should_check_hallucination(state: AgentState) -> Literal["check_hallucination", "end"]:
-    """生成后路由：是否进行幻觉检测"""
-    if state.get("enable_reflection", True):
-        return "check_hallucination"
-    logger.info("路由: 自反思已关闭，跳过幻觉检测 → END")
+    logger.info("路由: transform_query 已关闭或超过重试次数 → end (降级)")
     return "end"
 
 
 def route_retrieval_strategies(
     state: AgentState,
 ) -> list[Send]:
-    """retrieve 后的条件路由：根据开关动态 fan-out 到启用的检索策略。
-
-    只有 enable_xxx=True 的节点才会被 Send 调度执行，
-    关闭的节点完全不被调用（零开销）。
-    KG 检索只有在 enable_kg=True AND kg_intent=True 时才触发。
-    全部关闭时直达 merge_retrieval。
-    """
+    """retrieve 后的条件路由：根据开关动态 fan-out 到启用的检索策略。"""
     sends: list[Send] = []
     if state.get("enable_bm25", False):
         sends.append(Send("bm25_retrieve", state))
@@ -144,29 +108,29 @@ def route_retrieval_strategies(
 
 def route_after_merge(
     state: AgentState,
-) -> Literal["rerank_documents", "grade_documents", "generate"]:
+) -> Literal["rerank_documents", "grade_documents", "end"]:
     """merge_retrieval 后的条件路由：根据 rerank 和 grade 开关决定路径。
 
-    - rerank ON  → rerank_documents → (后续再根据 grade 开关决定)
+    - rerank ON  → rerank_documents
     - rerank OFF + grade ON → 直达 grade_documents
-    - 两者均 OFF → 直达 generate
+    - 两者均 OFF → 直达 end（外部生成）
     """
     if state.get("enable_rerank", True):
         return "rerank_documents"
     if state.get("enable_grade_documents", True):
         return "grade_documents"
-    logger.info("路由: rerank 和 grade 均已关闭 → generate")
-    return "generate"
+    logger.info("路由: rerank 和 grade 均已关闭 → end (外部生成)")
+    return "end"
 
 
 def route_after_rerank(
     state: AgentState,
-) -> Literal["grade_documents", "generate"]:
+) -> Literal["grade_documents", "end"]:
     """rerank 后的条件路由：是否进行文档评估"""
     if state.get("enable_grade_documents", True):
         return "grade_documents"
-    logger.info("路由: grade 已关闭 → generate")
-    return "generate"
+    logger.info("路由: grade 已关闭 → end (外部生成)")
+    return "end"
 
 
 def build_agent_graph() -> StateGraph:
@@ -182,19 +146,8 @@ def build_agent_graph() -> StateGraph:
         grade_documents  - 文档相关性评估
         web_search       - 联网搜索降级
         transform_query  - 查询重写优化
-        generate         - 答案生成
-        check_hallucination - 幻觉检测
 
-    流转:
-        START → retrieve → [条件 Send fan-out bm25/hyde/multi_query]
-                 │                    │
-                 │                    └→ merge_retrieval
-                 │                         │
-                 └────────(全关直达)───────┘
-                                           │
-                                      rerank_documents → grade_documents
-                                                              ├── [RELEVANT] → generate → ...
-                                                              └── [IRRELEVANT] → web_search / transform_query
+    generate / check_hallucination 由外部 rag_service 处理。
     """
     workflow = StateGraph(AgentState)
 
@@ -210,92 +163,65 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("grade_documents", grade_documents)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
-    workflow.add_node("generate", generate)
-    workflow.add_node("check_hallucination", check_hallucination)
     workflow.add_node("tools", tool_node)
 
-    # 设置入口: KG 意图分析 → 语义检索
+    # 设置入口
     workflow.set_entry_point("analyze_kg_intent")
-
-    # analyze_kg_intent → retrieve（无论是否启用 KG 都执行语义检索）
     workflow.add_edge("analyze_kg_intent", "retrieve")
 
-    # retrieve 后的条件边：fan-out 到启用的检索策略（或直达 merge）
+    # retrieve → 条件 Send fan-out
     workflow.add_conditional_edges(
         "retrieve",
         route_retrieval_strategies,
         [
-            "bm25_retrieve",
-            "hyde_retrieve",
-            "multi_query_retrieve",
-            "kg_retrieve",
-            "merge_retrieval",
+            "bm25_retrieve", "hyde_retrieve", "multi_query_retrieve",
+            "kg_retrieve", "merge_retrieval",
         ],
     )
 
-    # 各检索策略 → merge_retrieval fan-in 收敛
+    # 各检索策略 → merge_retrieval fan-in
     workflow.add_edge("bm25_retrieve", "merge_retrieval")
     workflow.add_edge("hyde_retrieve", "merge_retrieval")
     workflow.add_edge("multi_query_retrieve", "merge_retrieval")
     workflow.add_edge("kg_retrieve", "merge_retrieval")
 
-    # merge 后的条件边：根据开关走 rerank / grade / generate
+    # merge → rerank / grade / end（条件路由）
     workflow.add_conditional_edges(
         "merge_retrieval",
         route_after_merge,
         {
             "rerank_documents": "rerank_documents",
             "grade_documents": "grade_documents",
-            "generate": "generate",
+            "end": END,
         },
     )
 
-    # rerank 后的条件边：是否进行文档评估
+    # rerank → grade / end
     workflow.add_conditional_edges(
         "rerank_documents",
         route_after_rerank,
         {
             "grade_documents": "grade_documents",
-            "generate": "generate",
+            "end": END,
         },
     )
 
-    # 条件边：grade_documents → generate / web_search / transform_query
+    # grade → end / web_search / transform_query
     workflow.add_conditional_edges(
         "grade_documents",
         should_continue_after_grade,
         {
-            "generate": "generate",
+            "end": END,
             "web_search": "web_search",
             "transform_query": "transform_query",
         },
     )
 
-    # 边：web_search → generate（联网搜索后直接生成答案）
-    workflow.add_edge("web_search", "generate")
+    # web_search → END（外部生成）
+    workflow.add_edge("web_search", END)
 
-    # 边：transform_query → retrieve（重新检索循环）
+    # transform_query → retrieve（重新检索循环）
     workflow.add_edge("transform_query", "retrieve")
-
-    # 条件边：generate → check_hallucination（开启自反思）或 END（关闭）
-    workflow.add_conditional_edges(
-        "generate",
-        should_check_hallucination,
-        {
-            "check_hallucination": "check_hallucination",
-            "end": END,
-        },
-    )
-
-    # 条件边：check_hallucination → generate（重试）或 END
-    workflow.add_conditional_edges(
-        "check_hallucination",
-        should_continue_after_hallucination,
-        {
-            "generate": "generate",
-            "end": END,
-        },
-    )
 
     # 编译图（带内存检查点，支持状态持久化）
     checkpointer = MemorySaver()

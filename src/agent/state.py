@@ -1,4 +1,8 @@
-"""Agent 状态定义 - LangGraph StateGraph 的全局共享状态"""
+"""Agent 状态定义 - LangGraph StateGraph 的全局共享状态
+
+generate（生成）和 check_hallucination（幻觉检测）已移至外部模块，
+因此 answer、hallucination_detected、citation_metadata 字段已移除。
+"""
 
 import operator
 from typing import Annotated, TypedDict
@@ -38,12 +42,6 @@ class AgentState(TypedDict):
     # 最大重试次数
     max_iterations: int
 
-    # 最终生成的答案
-    answer: str
-
-    # 幻觉检测结果
-    hallucination_detected: bool
-
     # Agent 执行路径记录（用于可观测性）
     # 使用 operator.add reducer 以支持并行节点（Send API）的并发写入合并
     agent_path: Annotated[list[str], operator.add]
@@ -75,7 +73,3 @@ class AgentState(TypedDict):
     enable_kg: bool                    # 是否启用知识图谱检索
     kg_intent: bool                    # 意图分析结果：是否需要 KG
     kg_context: str                    # KG 检索到的结构化上下文文本
-
-    # 引文标注元数据
-    # key: "Doc1-Para2", value: {"filename": ..., "paragraph_text": ..., "source_type": "local"|"web"|"kg", ...}
-    citation_metadata: dict[str, dict]

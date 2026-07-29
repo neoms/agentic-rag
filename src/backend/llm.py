@@ -71,7 +71,9 @@ def _install_retry_on_llm(llm: ChatOpenAI) -> ChatOpenAI:
     def retry_invoke(*args, **kwargs):
         return original_invoke(*args, **kwargs)
 
-    llm.invoke = retry_invoke
+    # 使用 object.__setattr__ 绕过 Pydantic v2 的字段验证
+    # ChatOpenAI 是 Pydantic 模型，直接属性赋值会触发 "no field" 异常
+    object.__setattr__(llm, "invoke", retry_invoke)
 
     # 异步 ainvoke 重试
     original_ainvoke = llm.ainvoke
@@ -81,7 +83,7 @@ def _install_retry_on_llm(llm: ChatOpenAI) -> ChatOpenAI:
     async def retry_ainvoke(*args, **kwargs):
         return await original_ainvoke(*args, **kwargs)
 
-    llm.ainvoke = retry_ainvoke
+    object.__setattr__(llm, "ainvoke", retry_ainvoke)
 
     logger.debug("LLM 重试已安装: max_retries=%d, timeout=%ds",
                  settings.llm_max_retries, settings.llm_request_timeout)

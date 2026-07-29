@@ -1,17 +1,20 @@
-"""Agent/RAG 服务层 - 流式 Agent 编排与对话交互"""
+"""Agent/RAG 服务层 - 流式 Agent 编排与对话交互
+
+职责：
+- 组装 AgentState → 驱动 LangGraph 执行检索 → 外部流式生成 + 幻觉检测
+- 生成（generate）和幻觉检测（check_hallucination）委托给独立模块
+"""
 
 import time
 import asyncio
 import logging
 import json
-import re
 from typing import AsyncIterator
 
 from langchain_core.messages import HumanMessage
 
 from src.agent.graph import agent_graph
 from src.agent.state import AgentState
-from src.agent.prompts import CHECK_HALLUCINATION_SYSTEM, CHECK_HALLUCINATION_USER
 from src.models.chat import (
     AgenticChatRequest,
     SourceDocument,
@@ -20,7 +23,14 @@ from src.models.chat import (
     StreamEvent,
 )
 from src.memory.manager import memory_manager
-from src.backend.llm import create_strong_llm, create_fast_llm
+from src.backend.llm import create_strong_llm
+from src.services.generator import (
+    format_documents_with_citations,
+    build_generate_prompt,
+    build_generate_node_data,
+    build_hallucination_node_data,
+)
+from src.services.hallucination_checker import check_hallucination_async
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +55,6 @@ class RAGService:
             "documents_relevant": False,
             "iteration_count": 0,
             "max_iterations": 3,
-            "answer": "",
-            "hallucination_detected": False,
             "agent_path": [],
             "stream": True,
             "tool_calls": [],
@@ -64,11 +72,8 @@ class RAGService:
             "enable_kg": request.enable_kg,
             "kg_intent": False,
             "kg_context": "",
-            "citation_metadata": {},
         }
 
-        # 使用 astream_events 获取节点的开始/完成事件（on_chain_start/on_chain_end）
-        # generate/check_hallucination 不在此处发送，由外部流式生成和幻觉检测阶段手动控制
         # recursion_limit=50：KG 开启时 Send 分支 + 查询重写循环可能超过默认 25
         config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 50}
         GRAPH_NODES = {
@@ -89,27 +94,27 @@ class RAGService:
             elif kind == "on_chain_end":
                 logger.info("[stream_rag] 节点完成: %s", name)
                 yield StreamEvent(event="node_step", data=name)
-        # 图执行完成，开始外部流式生成（generate 节点从此刻起持续活跃）
-        yield StreamEvent(event="node_start", data="generate")
 
-        # 获取最终状态（含检索到的文档和引文元数据）— 放到线程池避免阻塞事件循环
+        # 获取最终状态
         final_state = await asyncio.to_thread(agent_graph.get_state, config)
         result = final_state.values if final_state else {}
         logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
 
-        # 从 final_state 构建各图内节点的 I/O 数据
+        # 构建图内节点的 I/O 数据 + 处理 agent_path
         node_data: dict[str, dict[str, str | list[str]]] = self._build_node_data(result, request)
 
         agent_path = result.get("agent_path", [])
-        # 过滤掉 graph 内部标记为 skipped 的节点（非流式模式或空状态下的安全兜底）
         agent_path = [p for p in agent_path if "skipped" not in p]
-        # 统一 generate / check_hallucination 标签（流式模式下保留运行过的节点）
-        agent_path = [p.replace(" (streaming)", "") for p in agent_path]
+        # 补充外部生成路径标记（generate/check_hallucination 已从图中移除）
+        agent_path.append("generate")
+        if request.enable_reflection:
+            agent_path.append("check_hallucination")
+
         documents = result.get("documents", [])
         logger.info("[stream_rag] 状态图完成: path=%s, docs=%d, graph_elapsed=%.2fs",
                      agent_path, len(documents), time.time() - t0)
 
-        # 发送检索结果来源（全部传给 LLM 的参考源）
+        # 发送检索结果来源
         sources = [
             SourceDocument(
                 content=doc.page_content[:300],
@@ -128,134 +133,47 @@ class RAGService:
             data=json.dumps(agent_path, ensure_ascii=False),
         )
 
-        # 流式生成答案（带引文标注）
-        if documents:
-            # ===== 1. 构建带段落索引的文档上下文 + 同步构建 citation_metadata =====
-            doc_parts: list[str] = []
-            citation_metadata: dict[str, dict] = {}
-            for doc_idx, doc in enumerate(documents, 1):
-                src = doc.metadata.get("url") or doc.metadata.get("filename", "unknown")
-                url_info = f"\n链接: {doc.metadata['url']}" if doc.metadata.get("url") else ""
-                source_type = doc.metadata.get("source", "local")
-                url = doc.metadata.get("url", "")
-                # 按段落拆分（双换行分隔），为每段分配 [DocX-ParaY] 标识
-                paragraphs = [p.strip() for p in re.split(r'\n\s*\n', doc.page_content) if p.strip()]
-                if not paragraphs:
-                    paragraphs = [doc.page_content]
-                para_lines = []
-                for para_idx, para in enumerate(paragraphs, 1):
-                    citation_key = f"Doc{doc_idx}-Para{para_idx}"
-                    para_lines.append(f"  [{citation_key}] {para}")
-                    # 同步构建 citation_metadata，确保索引与 LLM 看到的完全一致
-                    citation_metadata[citation_key] = {
-                        "filename": src,
-                        "source_type": source_type,
-                        "url": url,
-                        "paragraph_text": para,
-                        "doc_index": doc_idx,
-                        "para_index": para_idx,
-                    }
-                doc_text = "\n\n".join(para_lines)
-                doc_parts.append(f"来源: {src}{url_info}\n内容:\n{doc_text}")
-            docs_text = "\n\n---\n\n".join(doc_parts)
+        # 图执行完成，开始外部流式生成
+        yield StreamEvent(event="node_start", data="generate")
 
-            # 发送引文标注元数据（用刚刚构建的，确保与 prompt 内索引一致）
+        if documents:
+            # 1. 构建带引文的文档上下文
+            docs_text, citation_metadata = format_documents_with_citations(documents)
+
+            # 2. 发送引文元数据
             if citation_metadata:
                 yield StreamEvent(
                     event="citations",
                     data=json.dumps(citation_metadata, ensure_ascii=False),
                 )
 
+            # 3. 构建 prompt 并流式生成
             chat_history = memory_manager.get_chat_history_string(request.session_id)
-
-            prompt = f"""你是一个专业的知识问答助手。请基于提供的文档上下文回答用户问题。
-
-规则：
-1. 优先使用提供的文档信息回答；信息不足时明确说明
-2. 回答简洁准确有条理，使用中文
-3. 【重要】每句陈述性内容末尾都必须标注来源，格式为 [DocX-ParaY]
-   - 单源标注: "Python是动态类型语言 [Doc1-Para2]。"
-   - 多源标注: "机器学习分为三类 [Doc1-Para1, Doc2-Para3]。"
-4. 每句话至少有一个引用标注（总结句可多源标注），没有来源的陈述不要写
-5. 严格使用文档中提供的 [DocX-ParaY] 标识
-
-文档上下文：
-{docs_text}
-
-对话历史：
-{chat_history or '无'}
-
-用户问题：{request.query}
-
-请回答（每句话末尾都标注来源）："""
-
+            prompt = build_generate_prompt(request.query, docs_text, chat_history)
             llm = create_strong_llm(streaming=True)
+
             full_answer = ""
             async for chunk in llm.astream(prompt):
                 if chunk.content:
                     full_answer += chunk.content
                     yield StreamEvent(event="token", data=chunk.content)
 
-            # 填充 generate 节点的 I/O 数据（含具体文档列表）
-            gen_input: list[str] = [f"问题: {request.query}"]
-            for i, doc in enumerate(documents[:8]):
-                src = doc.metadata.get("url") or doc.metadata.get("filename", f"文档{i+1}")
-                preview = doc.page_content[:100].replace("\n", " ")
-                gen_input.append(f"参考 {src}:\n{preview}...")
-            if len(documents) > 8:
-                gen_input.append(f"... 及其他 {len(documents) - 8} 条")
-            node_data["generate"] = {
-                "input": gen_input,
-                "output": full_answer,
-            }
+            # 标记 generate 已完成（让流程图在幻觉检测前就显示生成完成）
+            yield StreamEvent(event="node_step", data="generate")
 
-            # 流式生成完成后，进行幻觉检测（仅在开启自反思时）
+            # 4. 填充 generate 节点 I/O 数据
+            node_data["generate"] = build_generate_node_data(
+                request.query, documents, full_answer,
+            )
+
+            # 5. 幻觉检测（自反思开启时）
             hallucination_passed = True
             hallucination_faithfulness = 100.0
             if request.enable_reflection:
                 yield StreamEvent(event="node_start", data="check_hallucination")
-                try:
-                    docs_for_check = "\n---\n".join(
-                        f"[文档 {i+1}] {doc.page_content[:500]}"
-                        for i, doc in enumerate(documents[:8])
-                    )
-                    check_llm = create_fast_llm()
-                    check_messages = [
-                        HumanMessage(content=CHECK_HALLUCINATION_SYSTEM),
-                        HumanMessage(
-                            content=(
-                                CHECK_HALLUCINATION_USER.format(
-                                    documents=docs_for_check,
-                                    answer=full_answer,
-                                )
-                                + "\n\n输出要求：请返回一个 JSON 对象，包含两个字段："
-                                '"passed" (布尔值，true 表示答案忠实于文档，false 表示存在编造)，'
-                                '"faithfulness" (浮点数，0.0~100.0，精确到小数点后一位，表示答案对文档的忠实度百分比)。'
-                                '只输出 JSON，不要输出其他内容。'
-                                '示例：{"passed": true, "faithfulness": 92.5}'
-                            ),
-                        ),
-                    ]
-                    check_response = await check_llm.ainvoke(check_messages)
-                    check_raw = check_response.content.strip()
-                    # 从 LLM 返回中提取 JSON
-                    import re as _re
-                    json_match = _re.search(r'\{[^{}]*\}', check_raw)
-                    if json_match:
-                        check_data = json.loads(json_match.group())
-                        hallucination_faithfulness = float(check_data.get("faithfulness", 100))
-                        hallucination_faithfulness = max(0.0, min(100.0, round(hallucination_faithfulness, 1)))
-                        hallucination_passed = check_data.get("passed", True)
-                    else:
-                        hallucination_passed = "PASSED" in check_raw.upper() or "true" in check_raw.lower()
-                    logger.info(
-                        "[stream_rag] 幻觉检测: faithfulness=%.1f%%, passed=%s",
-                        hallucination_faithfulness,
-                        str(hallucination_passed),
-                    )
-                except Exception as e:
-                    logger.warning("[stream_rag] 幻觉检测异常: %s", e)
-
+                hallucination_passed, hallucination_faithfulness = (
+                    await check_hallucination_async(documents, full_answer)
+                )
                 yield StreamEvent(event="node_step", data="check_hallucination")
                 yield StreamEvent(
                     event="hallucination",
@@ -265,20 +183,11 @@ class RAGService:
                         "faithfulness": hallucination_faithfulness,
                     }, ensure_ascii=False),
                 )
-                # 填充 check_hallucination 节点的 I/O 数据
-                node_data["check_hallucination"] = {
-                    "input": [
-                        f"待检测答案 ({len(full_answer)} 字符):",
-                        full_answer[:300] + ("..." if len(full_answer) > 300 else ""),
-                    ],
-                    "output": [
-                        f"忠实度: {hallucination_faithfulness}%",
-                        f"判定: {'PASSED ✓' if hallucination_passed else 'FAILED ✗'}",
-                        f"结果: {'答案忠实于参考文档' if hallucination_passed else '答案存在编造，需要重试'}",
-                    ],
-                }
+                node_data["check_hallucination"] = build_hallucination_node_data(
+                    full_answer, hallucination_faithfulness, hallucination_passed,
+                )
 
-            # 记录对话
+            # 6. 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)
             logger.info("[stream_rag] 流式生成完成: answer_len=%d", len(full_answer))
         else:
@@ -286,17 +195,13 @@ class RAGService:
             yield StreamEvent(event="token", data=msg)
             memory_manager.add_interaction(request.session_id, request.query, msg)
             logger.info("[stream_rag] 无文档，返回兜底回答")
-            node_data["generate"] = {
-                "input": [f"用户问题: {request.query}", "参考文档: 无（未检索到相关文档）"],
-                "output": "兜底回答: 未找到相关文档",
-            }
+            node_data["generate"] = build_generate_node_data(request.query, [], msg)
 
-        # 发送节点 I/O 数据（用于前端流程图点击展示）
+        # 发送节点 I/O 数据（前端流程图点击展示）
         yield StreamEvent(
             event="node_data",
             data=json.dumps(node_data, ensure_ascii=False),
         )
-        # 完成
         yield StreamEvent(event="done", data="")
         logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
 
@@ -324,7 +229,13 @@ class RAGService:
         data: dict[str, dict[str, str | list[str]]] = {}
 
         # ── 意图分析 ──
-        kg_intent = result.get('kg_intent', False)
+        # kg_intent 在最终状态中恒为 False（kg_retrieve_node 会重置它用于防循环）。
+        # 因此通过 agent_path 判断 KG 是否实际执行过。
+        agent_path = result.get("agent_path", [])
+        kg_actually_ran = any(
+            p == "kg_retrieve" for p in agent_path
+        )
+        kg_intent = result.get('kg_intent', False) or kg_actually_ran
         data["analyze_kg_intent"] = {
             "input": f"用户问题: {query}",
             "output": [
@@ -383,7 +294,7 @@ class RAGService:
             "output": RAGService._doc_items(docs),
         }
 
-        # ── 重排序（输出与输入文档内容一致，仅排序变化） ──
+        # ── 重排序 ──
         if request.enable_rerank:
             data["rerank_documents"] = {
                 "input": [f"待重排序文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
@@ -393,7 +304,6 @@ class RAGService:
         # ── 文档评估 ──
         if request.enable_grade_documents:
             relevant = result.get('documents_relevant', False)
-            # 从 agent_path 推断哪些文档被标记为相关
             grade_verdict = "全部通过" if relevant else "部分/全部未通过"
             data["grade_documents"] = {
                 "input": [f"待评估文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
@@ -413,7 +323,6 @@ class RAGService:
 
         # ── 联网搜索 ──
         if request.enable_web_search:
-            # 从最终文档中找到来源为 web 的结果
             web_results = [d for d in docs if d.metadata.get("source") == "web"] if docs else []
             if web_results:
                 web_items = []
