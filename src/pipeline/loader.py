@@ -25,6 +25,9 @@ _HR_PATTERN = re.compile(r"^-{3,}\s*$|^\*{3,}\s*$", re.MULTILINE)
 # Unicode 范围：CJK 统一表意文字
 _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
+# Markdown 标题检测（行首 # 标记）
+_HEADING_PATTERN = re.compile(r"^(#{1,6})\s", re.MULTILINE)
+
 
 def _is_readable_char(ch: str) -> bool:
     """判断字符是否属于可读字符（拉丁字母或 CJK 汉字）"""
@@ -106,12 +109,39 @@ def _refine_md_text(raw: str) -> str:
     return text
 
 
+def _split_by_headings(text: str) -> list[str]:
+    """按标题边界分割 Markdown 文本，确保每个章节连续
+
+    标题行（# / ## / ### 等）作为章节边界，正文跟随最近的标题。
+    每个返回的段落都是一个完整章节（标题 + 内容），不会被跨节断开。
+
+    Returns:
+        章节文本列表，按文档顺序排列
+    """
+    lines = text.split("\n")
+    sections: list[str] = []
+    current: list[str] = []
+
+    for line in lines:
+        if _HEADING_PATTERN.match(line):
+            # 新的标题行 → 结束上一节
+            if current:
+                sections.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+
+    if current:
+        sections.append("\n".join(current).strip())
+
+    return [s for s in sections if s]
+
+
 def load_markdown(file_bytes: bytes, filename: str) -> list[str]:
     """解析 Markdown 文件，保留结构信息
 
-    使用 mistune 解析 Markdown，保留标题、列表、代码块、引用等
-    结构标记（#、-、```、>），仅去除内联格式。这样 chunker 可以
-    利用标题作为自然分块边界。
+    按标题边界分割为章节（语义分块），确保 chunk 不会跨越章节。
+    同时保留标题、列表、代码块、引用等结构标记。
     """
     md_text = file_bytes.decode("utf-8", errors="replace")
     # 先清理内联标记
@@ -119,13 +149,13 @@ def load_markdown(file_bytes: bytes, filename: str) -> list[str]:
     # 将水平线作为段落分隔符
     plain = _HR_PATTERN.sub("\n\n---\n\n", plain)
 
-    # 按双换行分割为段落
-    paragraphs = [p.strip() for p in plain.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [plain]
+    # 按标题边界分割（语义分块，标题保留在章节开头）
+    sections = _split_by_headings(plain)
+    if not sections:
+        sections = [plain]
 
-    logger.info("Markdown %s 解析出 %d 段落（含结构标记）", filename, len(paragraphs))
-    return paragraphs
+    logger.info("Markdown %s 解析出 %d 个章节（按标题边界）", filename, len(sections))
+    return sections
 
 
 def load_txt(file_bytes: bytes, filename: str) -> list[str]:

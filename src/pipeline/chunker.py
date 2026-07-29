@@ -5,6 +5,7 @@
 """
 
 import logging
+import re
 from functools import lru_cache
 
 from langchain_core.documents import Document
@@ -13,6 +14,17 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# 标题检测（与 loader.py 保持一致）
+_HEADING_PATTERN = re.compile(r"^(#{1,6})\s", re.MULTILINE)
+
+
+def _extract_section_title(text: str) -> str:
+    """从文本中提取首个标题行作为章节名称"""
+    for line in text.split("\n"):
+        if _HEADING_PATTERN.match(line):
+            return line.strip()
+    return ""
 
 
 @lru_cache(maxsize=1)
@@ -92,11 +104,15 @@ def chunk_texts(
 
     all_docs: list[Document] = []
     for text in texts:
+        section_title = _extract_section_title(text)
         chunks = chunker.split_text(text)
         for chunk in chunks:
             if not chunk or not chunk.strip():
                 continue
-            doc = Document(page_content=chunk, metadata=dict(base_metadata))
+            meta = dict(base_metadata)
+            if section_title:
+                meta["section_title"] = section_title
+            doc = Document(page_content=chunk, metadata=meta)
             all_docs.append(doc)
 
     # 增强元数据：块序号和总数
