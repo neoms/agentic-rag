@@ -29,6 +29,9 @@ chroma_data/
 # KG 持久化目录
 kg_data/
 
+# 文档注册表
+document_registry.json
+
 # UV
 *.lock.cache/
 
