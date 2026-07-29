@@ -158,6 +158,75 @@ class GraphStore:
                 metadata=metadata or {},
             )
 
+    # ── 删除操作 ──────────────────────────────────────────
+
+    def remove_doc_id(self, doc_id: str) -> tuple[int, int]:
+        """从图谱中移除指定文档的所有实体和关系引用
+
+        处理策略（引用计数式级联删除）：
+        1. 对每条边/每个节点，从其 doc_ids 列表中移除目标 doc_id
+        2. 若 doc_ids 列表变空，说明该元素仅属于被删文档 → 删除
+        3. 若 doc_ids 列表非空，说明它还被其他文档引用 → 仅清理引用，保留元素
+        4. 孤立节点被删除时，NetworkX 自动移除其所有关联边（级联清理）
+
+        Args:
+            doc_id: 要删除的文档 ID
+
+        Returns:
+            (removed_entity_count, removed_relation_count)
+        """
+        if not doc_id:
+            return 0, 0
+
+        if self.is_empty():
+            logger.debug("图谱为空，跳过文档 %s 的 KG 清理", doc_id)
+            return 0, 0
+
+        # ---- 第一轮：扫描边，清理引用 + 标记空边 ----
+        edges_explicit: list[tuple[str, str]] = []
+        for src, dst, attrs in list(self._graph.edges(data=True)):
+            doc_ids: list[str] = attrs.get("doc_ids", [])
+            if doc_id not in doc_ids:
+                continue
+            doc_ids.remove(doc_id)
+            if not doc_ids:
+                edges_explicit.append((src, dst))
+
+        # 执行显式边删除
+        for src, dst in edges_explicit:
+            if self._graph.has_edge(src, dst):
+                self._graph.remove_edge(src, dst)
+
+        # ---- 第二轮：扫描节点，清理引用 + 标记空节点 ----
+        nodes_explicit: list[str] = []
+        for node, attrs in list(self._graph.nodes(data=True)):
+            doc_ids: list[str] = attrs.get("doc_ids", [])
+            if doc_id not in doc_ids:
+                continue
+            doc_ids.remove(doc_id)
+            if not doc_ids:
+                nodes_explicit.append(node)
+
+        # 统计因节点删除而被级联删除的边（这些边未被第一轮覆盖）
+        edges_cascaded = 0
+        for node in nodes_explicit:
+            edges_cascaded += self._graph.degree(node)
+
+        # 执行节点删除（NetworkX 自动移除该节点的所有关联边）
+        for node in nodes_explicit:
+            self._graph.remove_node(node)
+
+        # ---- 持久化 ----
+        self.save()
+
+        removed_entities = len(nodes_explicit)
+        removed_relations = len(edges_explicit) + edges_cascaded
+        logger.info(
+            "文档 %s 的 KG 数据已清理: 移除 %d 实体(节点), %d 关系(边)",
+            doc_id, removed_entities, removed_relations,
+        )
+        return removed_entities, removed_relations
+
     # ── 批量导入 ──────────────────────────────────────────
 
     def bulk_import(

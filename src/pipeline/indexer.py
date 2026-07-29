@@ -108,10 +108,25 @@ class DocumentIndexer:
         }
 
     def delete_document(self, doc_id: str) -> int:
-        """从向量库和注册表中删除文档"""
-        # 先从注册表删除（保证副作用即使向量库删除失败也执行）
+        """级联删除文档：注册表 → 向量库 → 知识图谱
+
+        三处独立存储均按 doc_id 精准清理，共享实体/关系仅移除引用。
+        """
+        # 1. 注册表（JSON 元数据）
         document_registry.remove(doc_id)
-        return vector_store.delete_by_doc_id(doc_id)
+        # 2. 向量库（ChromaDB 向量块）
+        chunk_count = vector_store.delete_by_doc_id(doc_id)
+        # 3. 知识图谱（实体 + 关系，引用计数式级联删除）
+        try:
+            kg_entities, kg_relations = get_graph_store().remove_doc_id(doc_id)
+            if kg_entities or kg_relations:
+                logger.debug(
+                    "KG 级联清理: 移除 %d 实体, %d 关系, doc_id=%s",
+                    kg_entities, kg_relations, doc_id,
+                )
+        except Exception as e:
+            logger.warning("KG 清理失败（不影响主流程）: %s", e)
+        return chunk_count
 
     def list_documents(self) -> list[dict]:
         """列出所有已索引的文档（优先使用注册表，失败回退到 ChromaDB）"""
