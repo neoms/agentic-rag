@@ -294,15 +294,14 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
         )
     if enable_mq:
         futures["multi"] = _EXECUTOR.submit(_run_multi_query, query)
-    if enable_kg:
-        futures["kg_extract"] = _EXECUTOR.submit(
-            _run_kg_extraction, query, settings.kg_max_entities,
-        )
 
     for name, fut in futures.items():
         t_fut_start = time.perf_counter()
         try:
-            parallel_docs[name] = fut.result(timeout=120)
+            parallel_docs[name] = fut.result(timeout=8)
+        except TimeoutError:
+            logger.warning("[PARALLEL_MERGE] %s 超时 (>8s), 跳过", name)
+            parallel_docs[name] = [] if name != "kg_extract" else None
         except Exception as e:
             logger.warning("[PARALLEL_MERGE] %s 线程异常: %s", name, e)
             parallel_docs[name] = [] if name != "kg_extract" else None
@@ -310,7 +309,6 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
         step_name = {
             "bm25": "bm25_retrieve",
             "multi": "multi_query_retrieve",
-            "kg_extract": "kg_retrieve",
         }.get(name, name)
         strategy_timings_ms[step_name] = round((time.perf_counter() - t_fut_start) * 1000, 1)
         _push("node_step", step_name)
@@ -327,14 +325,16 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     # 所有策略子任务已完成，现在才激活检索合并节点（让父节点在子任务后点亮）
     _push("node_start", "parallel_retrieve_merge")
 
-    # ── 3. KG Kuzu 查询（主线程，非线程安全但仅 ~10ms） ──
+    # ── 3. KG Kuzu 查询（主线程，非线程安全，~10ms） ──
+    # 直接通过 Kuzu 模糊搜索匹配实体（替代 LLM 抽取，从 8s -> 10ms）
+    t_kg = time.perf_counter()
     kg_context = ""
-    extracted = parallel_docs.get("kg_extract")
-    if extracted:
+    if enable_kg:
         try:
             store = get_graph_store()
             retriever = get_graph_retriever()
-            seed_entities = retriever._link_entities(extracted, store)
+            raw_matches = store.search_entities(query, top_k=settings.kg_max_entities)
+            seed_entities = [name for name, score in raw_matches if score >= 0.6]
             if seed_entities:
                 subgraph = store.get_subgraph(seed_entities, hops=settings.kg_max_hops)
                 if subgraph.number_of_nodes() > 0:
@@ -348,9 +348,13 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
                 else:
                     logger.info("[PARALLEL_MERGE] KG: 子图为空")
             else:
-                logger.info("[PARALLEL_MERGE] KG: 实体链接无匹配")
+                logger.info("[PARALLEL_MERGE] KG: 无匹配实体")
         except Exception as e:
             logger.warning("[PARALLEL_MERGE] KG 异常: %s", e)
+
+    if enable_kg:
+        strategy_timings_ms["kg_retrieve"] = round((time.perf_counter() - t_kg) * 1000, 1)
+        _push("node_step", "kg_retrieve")
 
     elapsed_total = round(time.perf_counter() - t_start, 3)
 
