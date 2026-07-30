@@ -61,15 +61,13 @@ class AgentState(TypedDict):
     enable_grade_documents: bool
     enable_transform_query: bool
     enable_bm25: bool
-    enable_hyde: bool
     enable_multi_query: bool
 
     # 各检索策略独立结果（并行写避免冲突）
     documents_bm25: list[Document]
-    documents_hyde: list[Document]
     documents_multi_query: list[Document]
 
-    # 知识图谱检索
-    enable_kg: bool                    # 是否启用知识图谱检索
+    # 知识图谱检索（由意图分析自动决定是否启用）
+    enable_kg: bool                     # 是否启用知识图谱检索
     kg_intent: bool                    # 意图分析结果：是否需要 KG
     kg_context: str                    # KG 检索到的结构化上下文文本

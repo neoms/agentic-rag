@@ -64,12 +64,10 @@ class RAGService:
             "enable_grade_documents": request.enable_grade_documents,
             "enable_transform_query": request.enable_transform_query,
             "enable_bm25": request.enable_bm25,
-            "enable_hyde": request.enable_hyde,
             "enable_multi_query": request.enable_multi_query,
             "documents_bm25": [],
-            "documents_hyde": [],
             "documents_multi_query": [],
-            "enable_kg": request.enable_kg,
+            "enable_kg": True,  # 由意图分析自动决定是否实际启用
             "kg_intent": False,
             "kg_context": "",
         }
@@ -79,21 +77,47 @@ class RAGService:
         GRAPH_NODES = {
             "retrieve", "rerank_documents", "grade_documents",
             "web_search", "transform_query", "tools",
-            "bm25_retrieve", "hyde_retrieve", "multi_query_retrieve", "merge_retrieval",
-            "analyze_kg_intent", "kg_retrieve",
+            "analyze_kg_intent", "parallel_retrieve_merge",
         }
-        logger.info("[stream_rag] 开始执行 Agent 状态图（逐步模式）...")
-        async for evt in agent_graph.astream_events(initial_state, config, version="v2"):
-            name = evt.get("name", "")
-            kind = evt.get("event", "")
-            if name not in GRAPH_NODES:
+        # 线性节点后继（用于预测 node_start）
+        LINEAR_NEXT: dict[str, str] = {
+            "analyze_kg_intent": "parallel_retrieve_merge",
+            "parallel_retrieve_merge": "rerank_documents",
+        }
+
+        # 图入口第一个节点一开始就算活跃
+        yield StreamEvent(event="node_start", data="analyze_kg_intent")
+
+        logger.info("[stream_rag] 开始执行 Agent 状态图（stream_mode=updates+custom）...")
+        async for mode, chunk in agent_graph.astream(
+            initial_state, config, stream_mode=["updates", "custom"],
+        ):
+            # ── 实时自定义事件（节点内 get_stream_writer() 推送） ──
+            if mode == "custom":
+                if isinstance(chunk, dict):
+                    custom_event = chunk.get("event", "")
+                    node_name = chunk.get("node", "")
+                    if custom_event and node_name:
+                        logger.info(
+                            "[stream_rag] 自定义事件: %s → %s", node_name, custom_event,
+                        )
+                        yield StreamEvent(event=custom_event, data=node_name)
                 continue
-            if kind == "on_chain_start":
-                logger.info("[stream_rag] 节点开始: %s", name)
-                yield StreamEvent(event="node_start", data=name)
-            elif kind == "on_chain_end":
-                logger.info("[stream_rag] 节点完成: %s", name)
-                yield StreamEvent(event="node_step", data=name)
+
+            # ── LangGraph 节点完成（updates 模式） ──
+            if mode == "updates":
+                for node_name in chunk:
+                    if node_name not in GRAPH_NODES:
+                        continue
+                    logger.info("[stream_rag] 节点完成: %s", node_name)
+                    yield StreamEvent(event="node_step", data=node_name)
+
+                    # 预测下一个线性节点（分支节点由后续 updates 自动发现）
+                    next_node = LINEAR_NEXT.get(node_name)
+                    if next_node:
+                        yield StreamEvent(event="node_start", data=next_node)
+                    elif node_name == "rerank_documents" and request.enable_grade_documents:
+                        yield StreamEvent(event="node_start", data="grade_documents")
 
         # 获取最终状态
         final_state = await asyncio.to_thread(agent_graph.get_state, config)
@@ -224,18 +248,11 @@ class RAGService:
         """从 final_state 提取各图内节点的输入/输出数据（含具体内容列表）"""
         docs = result.get("documents", []) if documents is None else documents
         query = request.query
-        kg_context = result.get("kg_context", "")
 
         data: dict[str, dict[str, str | list[str]]] = {}
 
         # ── 意图分析 ──
-        # kg_intent 在最终状态中恒为 False（kg_retrieve_node 会重置它用于防循环）。
-        # 因此通过 agent_path 判断 KG 是否实际执行过。
-        agent_path = result.get("agent_path", [])
-        kg_actually_ran = any(
-            p == "kg_retrieve" for p in agent_path
-        )
-        kg_intent = result.get('kg_intent', False) or kg_actually_ran
+        kg_intent = result.get("kg_intent", False)
         data["analyze_kg_intent"] = {
             "input": f"用户问题: {query}",
             "output": [
@@ -244,52 +261,36 @@ class RAGService:
             ],
         }
 
-        # ── 检索节点 ──
-        rewritten = result.get("rewritten_query", "") or query
+        # ── 子策略 I/O（前端流程图点击展示） ──
+        kg_context = result.get("kg_context", "")
         data["retrieve"] = {
-            "input": f"查询语句: {rewritten}",
+            "input": f"语义检索 + MMR: {query}",
             "output": RAGService._doc_items(docs),
         }
-
         if request.enable_bm25:
-            bm25_docs = result.get("documents_bm25", [])
+            bm25_count = result.get("documents_bm25_length", 0) or len(docs)
             data["bm25_retrieve"] = {
-                "input": f"BM25查询: {query}",
-                "output": RAGService._doc_items(bm25_docs),
+                "input": f"BM25 关键词检索: {query}",
+                "output": f"BM25 检索完成（与语义结果合并去重，共 {len(docs)} 份文档）",
             }
-
-        if request.enable_hyde:
-            hyde_docs = result.get("documents_hyde", [])
-            data["hyde_retrieve"] = {
-                "input": f"HyDE查询: {query}",
-                "output": RAGService._doc_items(hyde_docs),
-            }
-
         if request.enable_multi_query:
-            mq_docs = result.get("documents_multi_query", [])
             data["multi_query_retrieve"] = {
-                "input": f"多角度查询: {query}",
-                "output": RAGService._doc_items(mq_docs),
+                "input": f"多角度查询检索: {query}",
+                "output": RAGService._doc_items(docs),
+            }
+        if kg_intent:
+            kg_status = f"知识图谱已检索（{len(kg_context)} 字符上下文）" if kg_context else "知识图谱检索无结果"
+            data["kg_retrieve"] = {
+                "input": [f"Kuzu 图查询: {query}", f"KG意图: 是"],
+                "output": kg_status,
             }
 
-        # ── 图谱检索 ──
-        data["kg_retrieve"] = {
-            "input": [
-                f"用户问题: {query}",
-                f"KG意图: {'是' if kg_intent else '否'}",
-            ],
-            "output": [
-                f"图谱上下文 ({len(kg_context)} 字符):",
-                (kg_context[:300] + "...") if kg_context else "无图谱结果",
-            ],
-        }
-
-        # ── 合并检索 ──
-        strategies = ["语义检索"]
+        # ── 并行检索合并（所有策略在内部并行执行） ──
+        strategies = ["语义+MMR"]
         if request.enable_bm25: strategies.append("BM25")
-        if request.enable_hyde: strategies.append("HyDE")
-        if request.enable_multi_query: strategies.append("多角度查询")
-        data["merge_retrieval"] = {
+        if request.enable_multi_query: strategies.append("Multi-Query")
+        if kg_intent: strategies.append("知识图谱")
+        data["parallel_retrieve_merge"] = {
             "input": [f"已汇聚 {len(strategies)} 路检索策略:"] + strategies,
             "output": RAGService._doc_items(docs),
         }

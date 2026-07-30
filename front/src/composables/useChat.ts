@@ -279,9 +279,7 @@ export function useChat() {
         enable_grade_documents: enableGradeDocuments.value,
         enable_transform_query: enableTransformQuery.value,
         enable_bm25: flow.enableBm25.value,
-        enable_hyde: flow.enableHyde.value,
         enable_multi_query: flow.enableMultiQuery.value,
-        enable_kg: flow.enableKg.value,
       })
 
       reader = response.body?.getReader() ?? null
@@ -351,7 +349,14 @@ export function useChat() {
               try {
                 const parsedCitations = JSON.parse(data)
                 streamCitations.value = parsedCitations
-                messages.value[msgIndex].citations = parsedCitations
+                // 用完整对象替换触发响应式更新，确保子组件 MessageBubble
+                // 的 props.citations 能收到变更
+                if (messages.value[msgIndex]) {
+                  messages.value[msgIndex] = {
+                    ...messages.value[msgIndex],
+                    citations: parsedCitations,
+                  }
+                }
               } catch (e) {
                 console.error('Failed to parse citations:', e)
               }

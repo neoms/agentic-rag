@@ -82,6 +82,14 @@ class GraphStore:
         self._db = kuzu.Database(self._db_path)
         self._conn = kuzu.Connection(self._db)
         self._init_schema()
+        self._init_time = self._db_path_stat_mtime()
+
+    def _db_path_stat_mtime(self) -> float:
+        """返回 Kuzu 数据库文件的最后修改时间"""
+        try:
+            return Path(self._db_path).stat().st_mtime
+        except FileNotFoundError:
+            return 0.0
 
     # ── 内部 ──────────────────────────────────────────────
 

@@ -16,12 +16,10 @@ const nodeColors: Record<string, string> = {
   check_hallucination: 'bg-pink-400/10 text-pink-400 border-pink-400/20',
   web_search: 'bg-cyan-400/10 text-cyan-400 border-cyan-400/20',
   bm25_retrieve: 'bg-teal-400/10 text-teal-400 border-teal-400/20',
-  hyde_retrieve: 'bg-rose-400/10 text-rose-400 border-rose-400/20',
   multi_query_retrieve: 'bg-indigo-400/10 text-indigo-400 border-indigo-400/20',
-  merge_retrieval: 'bg-sky-400/10 text-sky-400 border-sky-400/20',
+  parallel_retrieve_merge: 'bg-sky-400/10 text-sky-400 border-sky-400/20',
   decide_strategy: 'bg-slate-400/10 text-slate-400 border-slate-400/20',
   analyze_kg_intent: 'bg-orange-400/10 text-orange-400 border-orange-400/20',
-  kg_retrieve: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
 }
 
 const nodeLabels: Record<string, string> = {
@@ -33,13 +31,11 @@ const nodeLabels: Record<string, string> = {
   generate: '生成回答',
   check_hallucination: '幻觉检测',
   web_search: '联网搜索',
+  parallel_retrieve_merge: '检索合并',
   bm25_retrieve: 'BM25 检索',
-  hyde_retrieve: 'HyDE 检索',
   multi_query_retrieve: '多查询检索',
-  merge_retrieval: '合并检索',
   decide_strategy: '策略决策',
   analyze_kg_intent: '图谱意图分析',
-  kg_retrieve: '图谱检索',
 }
 
 const defaultColor = 'bg-slate-400/10 text-slate-400 border-slate-400/20'

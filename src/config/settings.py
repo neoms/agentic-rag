@@ -75,9 +75,6 @@ class Settings(BaseSettings):
     min_content_chars: int = 20          # 解析后最少有效字符数
     min_readable_ratio: float = 0.3      # 可读字符（字母+中文）最低比例
 
-    # ========== HyDE 假设文档嵌入 ==========
-    hyde_model: str = "qwen-turbo"  # 用于生成假设答案的模型
-
     # ========== Multi-Query 多角度查询 ==========
     multi_query_num_variations: int = 3  # 生成的查询变体数量
 

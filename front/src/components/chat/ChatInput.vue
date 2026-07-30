@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Send, Loader2, Globe, Brain, ListOrdered, Sparkles, Shuffle, SearchCode, Lightbulb, GitBranch, Network } from 'lucide-vue-next'
+import { Send, Loader2, Globe, Brain, ListOrdered, Sparkles, Shuffle, SearchCode, GitBranch } from 'lucide-vue-next'
 import {
   enableWebSearch,
   enableReflection,
@@ -8,9 +8,7 @@ import {
   enableGradeDocuments,
   enableTransformQuery,
   enableBm25,
-  enableHyde,
   enableMultiQuery,
-  enableKg,
 } from '../../composables/agentFlowState'
 
 const props = defineProps<{
@@ -116,30 +114,6 @@ function handleKeydown(e: KeyboardEvent) {
         查询重写
       </button>
       <button
-        @click="enableBm25 = !enableBm25"
-        :class="[
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
-          enableBm25
-            ? 'bg-cyan-400/10 text-cyan-400 border-cyan-400/20'
-            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
-        ]"
-      >
-        <SearchCode class="w-3 h-3" />
-        BM25
-      </button>
-      <button
-        @click="enableHyde = !enableHyde"
-        :class="[
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
-          enableHyde
-            ? 'bg-pink-400/10 text-pink-400 border-pink-400/20'
-            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
-        ]"
-      >
-        <Lightbulb class="w-3 h-3" />
-        HyDE
-      </button>
-      <button
         @click="enableMultiQuery = !enableMultiQuery"
         :class="[
           'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
@@ -150,18 +124,6 @@ function handleKeydown(e: KeyboardEvent) {
       >
         <GitBranch class="w-3 h-3" />
         多角度查询
-      </button>
-      <button
-        @click="enableKg = !enableKg"
-        :class="[
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
-          enableKg
-            ? 'bg-orange-400/10 text-orange-400 border-orange-400/20'
-            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
-        ]"
-      >
-        <Network class="w-3 h-3" />
-        知识图谱
       </button>
       <span class="text-[10px] text-slate-600 ml-auto">
         Shift+Enter 换行

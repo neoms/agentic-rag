@@ -14,7 +14,7 @@ const navItems = [
 // Flow:
 //   START → analyze_kg_intent
 //              ↓ (总线)
-//       → retrieve(必选) | bm25 | hyde | 多角度 | 图谱(可选)
+//       → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
 //              ↓ (全部收敛到合并)
 //       → merge → rerank → grade → [相关] → generate → [反思] → check → END
 //                                  → [不相关] → transform_query ─ retry → retrieve
@@ -29,11 +29,10 @@ const NODES: N[] = [
   // 检索策略行（平级，语义检索必选，其余可选）
   { id: 'retrieve',             label: '语义检索',   x: 8,   y: 78, w: 60, h: 22 },
   { id: 'bm25_retrieve',        label: 'BM25',       x: 80,  y: 78, w: 52, h: 22 },
-  { id: 'hyde_retrieve',        label: 'HyDE',       x: 144, y: 78, w: 52, h: 22 },
-  { id: 'multi_query_retrieve', label: '多角度查询',  x: 208, y: 78, w: 68, h: 22 },
-  { id: 'kg_retrieve',          label: '图谱检索',   x: 288, y: 78, w: 68, h: 22 },
+  { id: 'multi_query_retrieve', label: '多角度查询',  x: 144, y: 78, w: 68, h: 22 },
+  { id: 'kg_retrieve',          label: '图谱检索',   x: 224, y: 78, w: 68, h: 22 },
   // 合并
-  { id: 'merge_retrieval',      label: '合并去重',   x: 150, y: 126,w: 60, h: 22 },
+  { id: 'parallel_retrieve_merge',label:'检索合并',  x: 150, y: 126,w: 60, h: 22 },
   // 可选节点（主链，可被 bypass）
   { id: 'rerank_documents',     label: '重排序',     x: 150, y: 166,w: 60, h: 22 },
   { id: 'grade_documents',      label: '文档评估',   x: 150, y: 206,w: 60, h: 22 },
@@ -49,9 +48,7 @@ const byId = (id: string): N => NODES.find(n => n.id === id)!
 // ── 状态 ──
 const ENABLED: Record<string, keyof typeof flow> = {
   bm25_retrieve: 'enableBm25',
-  hyde_retrieve: 'enableHyde',
   multi_query_retrieve: 'enableMultiQuery',
-  kg_retrieve: 'enableKg',
   rerank_documents: 'enableRerank',
   grade_documents: 'enableGradeDocuments',
   web_search: 'enableWebSearch',
@@ -285,32 +282,28 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           <line x1="38" y1="70" x2="38" y2="78" marker-end="url(#arrCyan)"/>
           <!-- 总线 → bm25（可选） -->
           <line x1="106" y1="70" x2="106" y2="78" marker-end="url(#arrCyan)"/>
-          <!-- 总线 → hyde（可选） -->
-          <line x1="170" y1="70" x2="170" y2="78" marker-end="url(#arrCyan)"/>
           <!-- 总线 → 多角度查询（可选） -->
-          <line x1="242" y1="70" x2="242" y2="78" marker-end="url(#arrCyan)"/>
-          <!-- 总线 → 图谱检索（可选） -->
-          <line x1="322" y1="70" x2="322" y2="78" marker-end="url(#arrCyan)"/>
+          <line x1="178" y1="70" x2="178" y2="78" marker-end="url(#arrCyan)"/>
+          <!-- 总线 → 图谱检索（意图分析自动） -->
+          <line x1="258" y1="70" x2="258" y2="78" marker-end="url(#arrCyan)"/>
         </g>
 
-        <!-- ═══ 5 路检索 → merge 收敛 ═══ -->
+        <!-- ═══ 4 路检索 → merge 收敛 ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- 语义检索 → merge -->
           <line x1="38" y1="100" x2="155" y2="126" marker-end="url(#arr)"/>
           <!-- bm25 → merge -->
           <line x1="106" y1="100" x2="165" y2="126" marker-end="url(#arr)"/>
-          <!-- hyde → merge -->
-          <line x1="170" y1="100" x2="180" y2="126" marker-end="url(#arr)"/>
           <!-- 多角度查询 → merge -->
-          <line x1="242" y1="100" x2="195" y2="126" marker-end="url(#arr)"/>
+          <line x1="178" y1="100" x2="180" y2="126" marker-end="url(#arr)"/>
           <!-- 图谱检索 → merge -->
-          <line x1="322" y1="100" x2="205" y2="126" marker-end="url(#arr)"/>
+          <line x1="258" y1="100" x2="195" y2="126" marker-end="url(#arr)"/>
         </g>
 
         <!-- ═══ 主链箭头 merge → rerank → grade → generate → check → END ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- merge → rerank -->
-          <line x1="180" :y1="byId('merge_retrieval').y + byId('merge_retrieval').h"
+          <line x1="180" :y1="byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h"
                 x2="180" :y2="byId('rerank_documents').y"
             marker-end="url(#arr)" :opacity="mainEdgeOpacity('merge_to_rerank')"/>
           <!-- rerank → grade -->
@@ -328,7 +321,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
 
         <!-- ═══ Bypass 绕过线（右侧虚线弧线） ═══ -->
         <!-- case 4: merge → 绕过 rerank → grade -->
-        <path :d="`M 210 ${byId('merge_retrieval').y + byId('merge_retrieval').h/2} C 230 ${byId('merge_retrieval').y + byId('merge_retrieval').h/2}, 230 ${byId('grade_documents').y + byId('grade_documents').h/2}, 210 ${byId('grade_documents').y + byId('grade_documents').h/2}`"
+        <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 230 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 230 ${byId('grade_documents').y + byId('grade_documents').h/2}, 210 ${byId('grade_documents').y + byId('grade_documents').h/2}`"
           fill="none" :stroke="bypassColor('rerank')" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bypassOpacity('rerank')" marker-end="url(#arrAmber)"/>
         <!-- case 3: rerank → 绕过 grade → generate -->
@@ -336,7 +329,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           fill="none" :stroke="bypassColor('grade')" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bypassOpacity('grade')" marker-end="url(#arrAmber)"/>
         <!-- case 2: merge → 绕过 rerank 和 grade → generate -->
-        <path :d="`M 210 ${byId('merge_retrieval').y + byId('merge_retrieval').h/2} C 240 ${byId('merge_retrieval').y + byId('merge_retrieval').h/2}, 240 ${byId('generate').y + byId('generate').h/2}, 210 ${byId('generate').y + byId('generate').h/2}`"
+        <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 240 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 240 ${byId('generate').y + byId('generate').h/2}, 210 ${byId('generate').y + byId('generate').h/2}`"
           fill="none" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bothOff() ? 0.55 : 0.04" marker-end="url(#arrAmber)"/>
         <!-- generate → 绕过 check → END -->
@@ -347,7 +340,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <!-- ═══ Bypass 标签 ═══ -->
         <text x="215" :y="byId('rerank_documents').y + byId('rerank_documents').h/2 - 5" :opacity="bypassOpacity('rerank')" :fill="bypassColor('rerank')" class="text-[9px]">绕过</text>
         <text x="215" :y="byId('grade_documents').y + byId('grade_documents').h + 14" :opacity="bypassOpacity('grade')" :fill="bypassColor('grade')" class="text-[9px]">绕过</text>
-        <text x="225" :y="(byId('merge_retrieval').y + byId('merge_retrieval').h/2 + byId('generate').y + byId('generate').h/2) / 2 - 2" :opacity="bothOff() ? 0.6 : 0.04" fill="#f59e0b" class="text-[9px]">均关</text>
+        <text x="225" :y="(byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2 + byId('generate').y + byId('generate').h/2) / 2 - 2" :opacity="bothOff() ? 0.6 : 0.04" fill="#f59e0b" class="text-[9px]">均关</text>
         <text x="215" :y="byId('check_hallucination').y + byId('check_hallucination').h + 26" :opacity="reflectionBypassOpacity()" :fill="reflectionBypassColor()" class="text-[9px]">绕过</text>
 
         <!-- ═══ 分支：grade → web_search / transform_query ═══ -->

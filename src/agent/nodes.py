@@ -20,7 +20,6 @@ from src.agent.prompts import (
     GRADE_DOCUMENTS_USER,
     REWRITE_QUERY_SYSTEM,
     REWRITE_QUERY_USER,
-    HYDE_GENERATE_USER,
     MULTI_QUERY_GENERATE_USER,
 )
 from src.agent.tools import ALL_TOOLS, _duckduckgo_search
@@ -32,10 +31,15 @@ from src.retrieval.bm25 import bm25_retriever
 from src.config.settings import settings
 from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
 
+from concurrent.futures import ThreadPoolExecutor
+
 logger = logging.getLogger(__name__)
 
 # 创建 ToolNode（LangGraph 预置，自动处理 tool_calls）
 tool_node = ToolNode(ALL_TOOLS)
+
+# 线程池单例（P2: 避免每次请求重复创建销毁）
+_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
 def retrieve(state: AgentState) -> dict[str, Any]:
@@ -242,178 +246,219 @@ def _merge_documents(
     return merged
 
 
-def bm25_retrieve_node(state: AgentState) -> dict[str, Any]:
-    """BM25 关键词检索节点
+def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
+    """并行检索合并节点（实时流推送子策略状态）
 
-    通过条件边 Send 调度，只有 enable_bm25=True 时才会被调用。
-    结果写入独立 State key documents_bm25 避免并行冲突。
+    在一个节点内完成所有策略的并行执行和合并。
+    使用 get_stream_writer() 将子策略的开始/结束事件实时推送到前端流程图。
+
+    1. 语义 + MMR（复用 retrieve()）
+    2. BM25 / Multi-Query / KG_LLM（线程池并行）
+    3. KG Kuzu 查询（主线程）
+    4. 合并去重（仅执行一次）
     """
+    from langgraph.config import get_stream_writer
+    writer = get_stream_writer()
+
+    def _push(event: str, node: str) -> None:
+        """推送自定义事件到前端（实时）"""
+        writer({"event": event, "node": node})
+        logger.debug("[PARALLEL_MERGE] 实时推送: %s → %s", node, event)
+
     query = state.get("rewritten_query") or state["query"]
-    logger.info("BM25 检索节点: query='%s'", query)
+    logger.info("[PARALLEL_MERGE] 入口: query='%s'", query[:80])
 
-    try:
-        results = bm25_retriever.search(query, top_k=settings.retrieval_top_k)
-        logger.info("BM25 检索完成: %d 个结果", len(results))
-        return {
-            "documents_bm25": results,
-            "agent_path": ["bm25_retrieve"],
-        }
-    except Exception as e:
-        logger.warning("BM25 检索异常: %s", e)
-        return {
-            "documents_bm25": [],
-            "agent_path": ["bm25_retrieve (error)"],
-        }
+    import time
+    t_start = time.perf_counter()
+    enable_bm25 = state.get("enable_bm25", True)
+    enable_mq = state.get("enable_multi_query", False)
+    enable_kg = state.get("enable_kg", False) and state.get("kg_intent", False)
 
+    # ── 1. 语义 + MMR（复用 retrieve()） ──
+    _push("node_start", "retrieve")
+    base = retrieve(state)["documents"]
+    _push("node_step", "retrieve")
+    elapsed_sem = round(time.perf_counter() - t_start, 3)
+    logger.info("[PARALLEL_MERGE] 语义+MMR: %d docs (%.3fs)", len(base), elapsed_sem)
 
-def hyde_retrieve_node(state: AgentState) -> dict[str, Any]:
-    """HyDE 假设文档嵌入检索节点
+    # ── 2. 线程池并行（BM25 / Multi-Query / KG_LLM） ──
+    parallel_docs: dict[str, Any] = {}
+    futures: dict[str, Any] = {}
 
-    1. LLM 生成假设答案
-    2. Embedding 向量化假设答案
-    3. 用假设答案的向量做语义检索
-    结果写入独立 State key documents_hyde。
-    """
-    query = state.get("rewritten_query") or state["query"]
-    logger.info("HyDE 检索节点: query='%s'", query)
-
-    try:
-        # 1. 生成假设答案
-        fast_llm = create_fast_llm()
-        hyde_prompt = HYDE_GENERATE_USER.format(query=query)
-        response = fast_llm.invoke(hyde_prompt)
-        hypothetical_doc = response.content.strip()
-        logger.info("HyDE: 假设答案生成完成，%d 字", len(hypothetical_doc))
-
-        # 2. 向量化假设答案
-        embedder = get_embedding_client()
-        hyde_embedding = embedder.embed_query(hypothetical_doc)
-
-        # 3. 用假设答案的向量做语义检索
-        k = settings.retrieval_top_k
-        results = vector_store.vector_store.similarity_search_by_vector(
-            hyde_embedding, k=k,
+    if enable_bm25:
+        _push("node_start", "bm25_retrieve")
+        futures["bm25"] = _EXECUTOR.submit(
+            bm25_retriever.search, query, settings.retrieval_top_k,
+        )
+    if enable_mq:
+        _push("node_start", "multi_query_retrieve")
+        futures["multi"] = _EXECUTOR.submit(_run_multi_query, query)
+    if enable_kg:
+        _push("node_start", "kg_retrieve")
+        futures["kg_extract"] = _EXECUTOR.submit(
+            _run_kg_extraction, query, settings.kg_max_entities,
         )
 
-        logger.info("HyDE 检索完成: %d 个结果", len(results))
-        return {
-            "documents_hyde": list(results),
-            "agent_path": ["hyde_retrieve"],
-        }
-    except Exception as e:
-        logger.warning("HyDE 检索异常: %s", e)
-        return {
-            "documents_hyde": [],
-            "agent_path": ["hyde_retrieve (error)"],
-        }
+    for name, fut in futures.items():
+        try:
+            parallel_docs[name] = fut.result(timeout=120)
+        except Exception as e:
+            logger.warning("[PARALLEL_MERGE] %s 线程异常: %s", name, e)
+            parallel_docs[name] = [] if name != "kg_extract" else None
+        # 线程完成 → 立即推送 node_step（前端实时显示完成状态）
+        step_name = {
+            "bm25": "bm25_retrieve",
+            "multi": "multi_query_retrieve",
+            "kg_extract": "kg_retrieve",
+        }.get(name, name)
+        _push("node_step", step_name)
 
+    elapsed_parallel = round(time.perf_counter() - t_start, 3)
+    logger.info(
+        "[PARALLEL_MERGE] 并行策略: bm25=%d, multi=%d, kg_extract=%s (%.3fs)",
+        len(parallel_docs.get("bm25", [])),
+        len(parallel_docs.get("multi", [])),
+        "done" if parallel_docs.get("kg_extract") else "skip",
+        elapsed_parallel - elapsed_sem,
+    )
 
-def multi_query_retrieve_node(state: AgentState) -> dict[str, Any]:
-    """Multi-Query 多角度查询检索节点
+    # ── 3. KG Kuzu 查询（主线程，非线程安全但仅 ~10ms） ──
+    kg_context = ""
+    extracted = parallel_docs.get("kg_extract")
+    if extracted:
+        try:
+            store = get_graph_store()
+            retriever = get_graph_retriever()
+            seed_entities = retriever._link_entities(extracted, store)
+            if seed_entities:
+                subgraph = store.get_subgraph(seed_entities, hops=settings.kg_max_hops)
+                if subgraph.number_of_nodes() > 0:
+                    paths_text = retriever._find_entity_paths(seed_entities, store)
+                    context = retriever._subgraph_to_text(subgraph, seed_entities)
+                    if paths_text:
+                        context += f"\n\n关联路径:\n{paths_text}"
+                    kg_context = context
+                    logger.info("[PARALLEL_MERGE] KG: %d 实体, %d 字符",
+                                len(seed_entities), len(kg_context))
+                else:
+                    logger.info("[PARALLEL_MERGE] KG: 子图为空")
+            else:
+                logger.info("[PARALLEL_MERGE] KG: 实体链接无匹配")
+        except Exception as e:
+            logger.warning("[PARALLEL_MERGE] KG 异常: %s", e)
 
-    1. LLM 生成 N 个查询变体
-    2. 对每个变体做语义检索
-    3. 全域去重合并
-    结果写入独立 State key documents_multi_query。
-    """
-    query = state.get("rewritten_query") or state["query"]
-    logger.info("Multi-Query 检索节点: query='%s'", query)
+    elapsed_total = round(time.perf_counter() - t_start, 3)
 
-    try:
-        # 1. 生成查询变体
-        fast_llm = create_fast_llm()
-        num_vars = settings.multi_query_num_variations
-        mq_prompt = MULTI_QUERY_GENERATE_USER.format(
-            query=query, num_variations=num_vars,
-        )
-        response = fast_llm.invoke(mq_prompt)
-        raw = response.content.strip()
-        # 解析 LLM 输出的多行查询变体
-        variants = [line.strip() for line in raw.split("\n") if line.strip()]
-        # 去掉可能的编号前缀（如 "1. ", "- "）
-        variants = [
-            v.split(". ", 1)[-1] if ". " in v[:5] else v
-            for v in variants
-        ]
-        variants = [v for v in variants if v != query][:num_vars]
-        logger.info("Multi-Query: 生成 %d 个变体: %s", len(variants), variants)
+    # ── 4. 合并（仅执行一次） ──
+    merged = _merge_documents(
+        base,
+        parallel_docs.get("bm25", []),
+        parallel_docs.get("multi", []),
+    )
 
-        # 2. 对每个变体做语义检索，合并去重
-        all_results: list[Document] = []
-        for v in [query] + variants:
-            results = vector_store.search(v, top_k=settings.retrieval_top_k)
-            all_results.extend(doc for doc, _ in results)
-
-        # 3. 全域去重
-        merged = _merge_documents(*all_results)
-        logger.info("Multi-Query 检索完成: 去重后 %d 个结果", len(merged))
-
-        return {
-            "documents_multi_query": merged,
-            "agent_path": ["multi_query_retrieve"],
-        }
-    except Exception as e:
-        logger.warning("Multi-Query 检索异常: %s", e)
-        return {
-            "documents_multi_query": [],
-            "agent_path": ["multi_query_retrieve (error)"],
-        }
-
-
-def merge_retrieval_node(state: AgentState) -> dict[str, Any]:
-    """检索结果合并节点
-
-    从多个来源合并文档并去重：
-    1. documents（基础向量+MMR 检索）
-    2. documents_bm25（BM25 检索，仅当 enable_bm25=True 时有值）
-    3. documents_hyde（HyDE 检索，仅当 enable_hyde=True 时有值）
-    4. documents_multi_query（Multi-Query 检索，仅当 enable_multi_query=True 时有值）
-    5. kg_context（知识图谱检索结果，作为特殊 Document 附加）
-
-    citation_metadata 在 rag_service.py 构建 prompt 时同步生成，
-    以确保索引顺序与 LLM 最终看到的文档列表一致。
-    """
-    base = state.get("documents", [])
-    bm25 = state.get("documents_bm25", [])
-    hyde = state.get("documents_hyde", [])
-    multi = state.get("documents_multi_query", [])
-    kg_context = state.get("kg_context", "")
-
-    merged = _merge_documents(base, bm25, hyde, multi)
-
-    # 将 KG 上下文作为特殊 Document 附加（标记来源）
     if kg_context:
-        from langchain_core.documents import Document
         kg_doc = Document(
             page_content=kg_context,
-            metadata={
-                "source": "knowledge_graph",
-                "filename": "知识图谱",
-            },
+            metadata={"source": "knowledge_graph", "filename": "知识图谱"},
         )
-        merged.insert(0, kg_doc)  # 放最前面，让 LLM 优先参考
-        logger.info("KG 上下文已附加到文档列表 (%d 字符)", len(kg_context))
+        merged.insert(0, kg_doc)
+        logger.info("[PARALLEL_MERGE] KG 上下文已前置插入")
 
     logger.info(
-        "合并检索结果: base=%d, bm25=%d, hyde=%d, multi=%d, kg=%s → merged=%d",
-        len(base), len(bm25), len(hyde), len(multi),
-        "yes" if kg_context else "no", len(merged),
+        "[PARALLEL_MERGE] 结果: base=%d, bm25=%d, multi=%d, "
+        "kg=%s → merged=%d (%.3fs)",
+        len(base),
+        len(parallel_docs.get("bm25", [])),
+        len(parallel_docs.get("multi", [])),
+        "yes" if kg_context else "no",
+        len(merged),
+        elapsed_total,
     )
 
     return {
         "documents": merged,
-        "agent_path": ["merge_retrieval"],
+        "agent_path": ["parallel_retrieve_merge"],
+        "kg_context": kg_context,
     }
 
 
-# ==================== 知识图谱检索节点 ====================
+def _run_kg_extraction(query: str, max_entities: int) -> list[str] | None:
+    """Thread-safe: KG LLM 实体抽取（仅 HTTP API，线程安全）
+
+    Returns: 实体名列表，或 None（抽取失败）
+    """
+    from src.agent.prompts import KG_RETRIEVE_ENTITY_EXTRACT_USER
+    try:
+        llm = create_fast_llm()
+        prompt = KG_RETRIEVE_ENTITY_EXTRACT_USER.format(
+            query=query, max_entities=max_entities,
+        )
+        response = llm.invoke(prompt)
+        raw = response.content.strip()
+        entities: list[str] = []
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line and len(line) > 1:
+                if line[0].isdigit() and (". " in line[:4] or "、" in line[:4]):
+                    line = line.split(". ", 1)[-1] if ". " in line[:4] else line.split("、", 1)[-1]
+                line = line.strip()
+                if line:
+                    entities.append(line)
+        if not entities and raw:
+            entities = [raw[:50]]
+        result = entities[:max_entities]
+        logger.debug("[KG_EXTRACT] LLM 抽取: %s", result)
+        return result
+    except Exception as e:
+        logger.warning("[KG_EXTRACT] 异常: %s", e)
+        return None
+
+
+def _run_multi_query(query: str) -> list[Document]:
+    """Thread-safe Multi-Query 内部实现"""
+    from src.backend.llm import create_fast_llm
+    fast_llm = create_fast_llm()
+    num_vars = settings.multi_query_num_variations
+    response = fast_llm.invoke(
+        MULTI_QUERY_GENERATE_USER.format(query=query, num_variations=num_vars),
+    )
+    raw = response.content.strip()
+    variants = [line.strip() for line in raw.split("\n") if line.strip()]
+    variants = [
+        v.split(". ", 1)[-1] if ". " in v[:5] else v for v in variants
+    ]
+    variants = [v for v in variants if v != query][:num_vars]
+
+    all_results: list[Document] = []
+    for v in [query] + variants:
+        results = vector_store.search(v, top_k=settings.retrieval_top_k)
+        all_results.extend(doc for doc, _ in results)
+
+    seen: set[str] = set()
+    merged: list[Document] = []
+    for doc in all_results:
+        key = doc.page_content[:200]
+        if key not in seen:
+            seen.add(key)
+            merged.append(doc)
+    return merged
+
+
+# ==================== 知识图谱节点 ====================
 
 
 def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
-    """知识图谱意图分析节点
+    """知识图谱意图分析节点（双阶段分级判断）
 
     在检索之前执行，分析用户问题是否适合用知识图谱回答。
     只有当 enable_kg=True 且图谱非空时才会被调用。
+
+    Stage 1: Kuzu 模糊搜索快速匹配（~10ms）
+        - 如果 query 中包含图库中存在的实体名 → 直接判定需要 KG
+        - 适用于明确提到实体名称的场景（~80% case）
+    Stage 2: LLM 语义分析兜底（~1s）
+        - 处理指代、隐式引用等边界 case
+        - 复用原有的 KGIntentAnalyzer
 
     设置 kg_intent 标志：
         - True → 后续会触发 kg_retrieve 并行检索
@@ -431,62 +476,41 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
         logger.info("KG 意图分析: 图谱为空, kg_intent=False")
         return {"kg_intent": False, "agent_path": ["analyze_kg_intent (empty kg)"]}
 
+    # ── Stage 1: Kuzu 快速实体匹配（10ms） ──
+    try:
+        results = store.search_entities(query, top_k=3)
+        # 实体名在 query 中明确出现 (score >= 0.6) → 确定提到了图谱中的实体
+        # 0.6 对应 name_lower in query_lower（实体名是 query 子串），
+        # 0.7 对应 query_lower in name_lower，0.9+ 对应别名/精确匹配
+        has_exact_match = any(score >= 0.6 for _, score in results)
+        if has_exact_match:
+            logger.info(
+                "KG 意图分析: Stage 1 快速匹配成功 → kg_intent=True (matches=%s)",
+                [(name, f"{s:.2f}") for name, s in results],
+            )
+            return {
+                "kg_intent": True,
+                "agent_path": ["analyze_kg_intent"],
+            }
+        logger.debug(
+            "KG 意图分析: Stage 1 无精确匹配 (best=%.2f)，进入 Stage 2 LLM 分析",
+            max((s for _, s in results), default=0),
+        )
+    except Exception as e:
+        logger.warning("KG 意图分析: Stage 1 异常，降级到 Stage 2: %s", e)
+
+    # ── Stage 2: LLM 语义分析兜底（1s） ──
     try:
         analyzer = get_kg_intent_analyzer()
         should_use = analyzer.analyze(query)
-        logger.info("KG 意图分析结果: %s", "SHOULD_USE_KG" if should_use else "SHOULD_NOT_USE_KG")
+        logger.info(
+            "KG 意图分析: Stage 2 LLM 分析 → %s",
+            "kg_intent=True" if should_use else "kg_intent=False",
+        )
         return {
             "kg_intent": should_use,
             "agent_path": ["analyze_kg_intent"],
         }
     except Exception as e:
-        logger.warning("KG 意图分析异常，默认降级: %s", e)
+        logger.warning("KG 意图分析: Stage 2 异常，默认降级: %s", e)
         return {"kg_intent": False, "agent_path": ["analyze_kg_intent (error)"]}
-
-
-def kg_retrieve_node(state: AgentState) -> dict[str, Any]:
-    """知识图谱检索节点
-
-    通过条件边 Send 调度，只有 enable_kg=True AND kg_intent=True 时才会被调用。
-
-    流程:
-        1. 从 query 抽取实体
-        2. Entity Linking 定位种子节点
-        3. BFS 子图提取
-        4. 多跳路径推理
-        5. 生成结构化上下文文本 → 写入 kg_context
-
-    kg_context 在 merge_retrieval 中作为特殊 Document 附加到 documents 列表。
-    """
-    query = state.get("rewritten_query") or state["query"]
-    logger.info("KG 检索节点: query='%s'", query[:100])
-
-    try:
-        store = get_graph_store()
-        retriever = get_graph_retriever()
-        context, entities = retriever.search(query, store)
-
-        if not context:
-            logger.info("KG 检索无结果")
-            return {
-                "kg_context": "",
-                "kg_intent": False,  # 避免后续循环重复 Send
-                "agent_path": ["kg_retrieve (no results)"],
-            }
-
-        logger.info("KG 检索完成: %d 实体, %d 字符",
-                     len(entities), len(context))
-
-        return {
-            "kg_context": context,
-            "kg_intent": False,  # 已完成 KG 检索，后续循环不再重复触发
-            "agent_path": ["kg_retrieve"],
-        }
-
-    except Exception as e:
-        logger.warning("KG 检索异常: %s", e)
-        return {
-            "kg_context": "",
-            "kg_intent": False,  # 避免后续循环重复 Send
-            "agent_path": ["kg_retrieve (error)"],
-        }

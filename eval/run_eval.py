@@ -198,9 +198,7 @@ def target_fn(inputs: dict) -> dict:
         enable_reflection=True,
         enable_kg=_eval_config.get("enable_kg", False),
         enable_multi_query=_eval_config.get("enable_multi_query", False),
-        enable_bm25=_eval_config.get("enable_bm25", False),
-        enable_hyde=_eval_config.get("enable_hyde", False),
-    )
+        enable_bm25=_eval_config.get("enable_bm25", True),
 
     t_start = time.perf_counter()
     result = asyncio.run(_consume_stream(request))
@@ -596,18 +594,12 @@ def main():
         action="store_true",
         help="启用 BM25 关键词检索",
     )
-    parser.add_argument(
-        "--enable-hyde",
-        action="store_true",
-        help="启用 HyDE 检索",
-    )
     args = parser.parse_args()
     version = args.version
 
     _eval_config["enable_kg"] = args.enable_kg
     _eval_config["enable_multi_query"] = args.enable_multi_query
     _eval_config["enable_bm25"] = args.enable_bm25
-    _eval_config["enable_hyde"] = args.enable_hyde
 
     version_dir = Path(__file__).resolve().parent / version
     if not version_dir.is_dir():
@@ -615,9 +607,9 @@ def main():
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("  Agentic RAG — LangSmith 评估 (版本: %s, 策略: kg=%s mq=%s bm25=%s hyde=%s)",
+    logger.info("  Agentic RAG — LangSmith 评估 (版本: %s, 策略: kg=%s mq=%s bm25=%s)",
                 version, _eval_config["enable_kg"], _eval_config["enable_multi_query"],
-                _eval_config["enable_bm25"], _eval_config["enable_hyde"])
+                _eval_config["enable_bm25"])
     logger.info("=" * 60)
 
     # 加载数据集

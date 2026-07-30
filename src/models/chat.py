@@ -12,10 +12,8 @@ class AgenticChatRequest(BaseModel):
     enable_rerank: bool = True
     enable_grade_documents: bool = True
     enable_transform_query: bool = True
-    enable_bm25: bool = False
-    enable_hyde: bool = False
+    enable_bm25: bool = True
     enable_multi_query: bool = False
-    enable_kg: bool = False  # 知识图谱检索
 
 
 class SourceDocument(BaseModel):

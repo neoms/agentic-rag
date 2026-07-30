@@ -17,9 +17,7 @@ export interface AgenticChatRequest {
   enable_grade_documents?: boolean
   enable_transform_query?: boolean
   enable_bm25?: boolean
-  enable_hyde?: boolean
   enable_multi_query?: boolean
-  enable_kg?: boolean
 }
 
 export interface SourceDocument {

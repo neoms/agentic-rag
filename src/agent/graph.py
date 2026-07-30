@@ -1,14 +1,18 @@
 """LangGraph 状态图构建 - Agent 节点编排与条件路由
 
 状态流转图：
-    START → retrieve → rerank_documents → grade_documents
-                                            ├── [RELEVANT] → 图结束 → 外部生成
-                                            └── [IRRELEVANT] →
-                                                ├── enable_web_search → web_search → 图结束
-                                                └── !enable_web_search → transform_query → retrieve (循环)
+    START → analyze_kg_intent → parallel_retrieve_merge → rerank_documents
+                                                           ↓
+                                                     grade_documents
+                                                     ├── [RELEVANT] → 图结束 → 外部生成
+                                                     └── [IRRELEVANT] →
+                                                         ├── enable_web_search → web_search → 图结束
+                                                         └── !enable_web_search → transform_query → retrieve (循环)
 
-生成（generate）和幻觉检测（check_hallucination）已从图中移除，
-由 rag_service 在外部完成流式生成与检测。
+parallel_retrieve_merge 内部合并了所有并行策略（BM25/Multi-Query/KG），
+消除了旧架构中 LangGraph Send fan-in 导致 merge 被多次调用的状态覆盖 bug。
+
+generate / check_hallucination 由外部 rag_service 完成流式生成。
 """
 
 import logging
@@ -16,7 +20,6 @@ from typing import Literal
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Send
 
 from src.agent.state import AgentState
 from src.agent.nodes import (
@@ -26,12 +29,8 @@ from src.agent.nodes import (
     transform_query,
     web_search_node,
     tool_node,
-    bm25_retrieve_node,
-    hyde_retrieve_node,
-    multi_query_retrieve_node,
-    merge_retrieval_node,
     analyze_kg_intent_node,
-    kg_retrieve_node,
+    parallel_retrieve_merge_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,51 +77,6 @@ def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_
     return "end"
 
 
-def route_retrieval_strategies(
-    state: AgentState,
-) -> list[Send]:
-    """retrieve 后的条件路由：根据开关动态 fan-out 到启用的检索策略。"""
-    sends: list[Send] = []
-    if state.get("enable_bm25", False):
-        sends.append(Send("bm25_retrieve", state))
-    if state.get("enable_hyde", False):
-        sends.append(Send("hyde_retrieve", state))
-    if state.get("enable_multi_query", False):
-        sends.append(Send("multi_query_retrieve", state))
-    if state.get("enable_kg", False) and state.get("kg_intent", False):
-        sends.append(Send("kg_retrieve", state))
-
-    if not sends:
-        sends.append(Send("merge_retrieval", state))
-
-    logger.info(
-        "检索策略路由: bm25=%s, hyde=%s, multi_query=%s, kg=%s → %d 个 Send",
-        state.get("enable_bm25", False),
-        state.get("enable_hyde", False),
-        state.get("enable_multi_query", False),
-        state.get("enable_kg", False) and state.get("kg_intent", False),
-        len(sends),
-    )
-    return sends
-
-
-def route_after_merge(
-    state: AgentState,
-) -> Literal["rerank_documents", "grade_documents", "end"]:
-    """merge_retrieval 后的条件路由：根据 rerank 和 grade 开关决定路径。
-
-    - rerank ON  → rerank_documents
-    - rerank OFF + grade ON → 直达 grade_documents
-    - 两者均 OFF → 直达 end（外部生成）
-    """
-    if state.get("enable_rerank", True):
-        return "rerank_documents"
-    if state.get("enable_grade_documents", True):
-        return "grade_documents"
-    logger.info("路由: rerank 和 grade 均已关闭 → end (外部生成)")
-    return "end"
-
-
 def route_after_rerank(
     state: AgentState,
 ) -> Literal["grade_documents", "end"]:
@@ -137,15 +91,15 @@ def build_agent_graph() -> StateGraph:
     """构建 Agent 状态图
 
     节点:
-        retrieve        - 语义检索 + MMR 混合
-        bm25_retrieve   - BM25 关键词检索（条件 Send 调度）
-        hyde_retrieve   - HyDE 假设文档嵌入检索（条件 Send 调度）
-        multi_query_retrieve - Multi-Query 多角度检索（条件 Send 调度）
-        merge_retrieval - 合并去重所有检索结果
-        rerank_documents - 重排序精排
-        grade_documents  - 文档相关性评估
-        web_search       - 联网搜索降级
-        transform_query  - 查询重写优化
+        parallel_retrieve_merge - 语义+MMR + 线程池并行策略 + 合并（多合一）
+        retrieve               - 语义 + MMR（仅用于查询重写循环）
+        rerank_documents       - 重排序精排
+        grade_documents        - 文档相关性评估
+        web_search              - 联网搜索降级
+        transform_query        - 查询重写优化
+
+    并行策略（BM25/Multi-Query/KG）全部在 parallel_retrieve_merge 内部
+    使用 ThreadPoolExecutor 并行执行，merge 只调用一次，消除状态覆盖 bug。
 
     generate / check_hallucination 由外部 rag_service 处理。
     """
@@ -153,50 +107,26 @@ def build_agent_graph() -> StateGraph:
 
     # 添加节点
     workflow.add_node("analyze_kg_intent", analyze_kg_intent_node)
-    workflow.add_node("retrieve", retrieve)
-    workflow.add_node("bm25_retrieve", bm25_retrieve_node)
-    workflow.add_node("hyde_retrieve", hyde_retrieve_node)
-    workflow.add_node("multi_query_retrieve", multi_query_retrieve_node)
-    workflow.add_node("kg_retrieve", kg_retrieve_node)
-    workflow.add_node("merge_retrieval", merge_retrieval_node)
+    workflow.add_node("parallel_retrieve_merge", parallel_retrieve_merge_node)
+    workflow.add_node("retrieve", retrieve)  # 仅用于 transform_query 循环
     workflow.add_node("rerank_documents", rerank_documents_node)
     workflow.add_node("grade_documents", grade_documents)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
     workflow.add_node("tools", tool_node)
 
-    # 设置入口
+    # ── 入口 → 意图分析 → 并行检索 + 合并 ──
     workflow.set_entry_point("analyze_kg_intent")
-    workflow.add_edge("analyze_kg_intent", "retrieve")
+    workflow.add_edge("analyze_kg_intent", "parallel_retrieve_merge")
 
-    # retrieve → 条件 Send fan-out
-    workflow.add_conditional_edges(
-        "retrieve",
-        route_retrieval_strategies,
-        [
-            "bm25_retrieve", "hyde_retrieve", "multi_query_retrieve",
-            "kg_retrieve", "merge_retrieval",
-        ],
-    )
+    # ── 并行检索 → rerank ──
+    workflow.add_edge("parallel_retrieve_merge", "rerank_documents")
 
-    # 各检索策略 → merge_retrieval fan-in
-    workflow.add_edge("bm25_retrieve", "merge_retrieval")
-    workflow.add_edge("hyde_retrieve", "merge_retrieval")
-    workflow.add_edge("multi_query_retrieve", "merge_retrieval")
-    workflow.add_edge("kg_retrieve", "merge_retrieval")
+    # ── 查询重写循环 → retrieve → rerank ──
+    workflow.add_edge("transform_query", "retrieve")
+    workflow.add_edge("retrieve", "rerank_documents")
 
-    # merge → rerank / grade / end（条件路由）
-    workflow.add_conditional_edges(
-        "merge_retrieval",
-        route_after_merge,
-        {
-            "rerank_documents": "rerank_documents",
-            "grade_documents": "grade_documents",
-            "end": END,
-        },
-    )
-
-    # rerank → grade / end
+    # ── rerank → grade / end ──
     workflow.add_conditional_edges(
         "rerank_documents",
         route_after_rerank,
@@ -206,7 +136,7 @@ def build_agent_graph() -> StateGraph:
         },
     )
 
-    # grade → end / web_search / transform_query
+    # ── grade → end / web_search / transform_query ──
     workflow.add_conditional_edges(
         "grade_documents",
         should_continue_after_grade,
@@ -217,11 +147,8 @@ def build_agent_graph() -> StateGraph:
         },
     )
 
-    # web_search → END（外部生成）
+    # ── web_search → END（外部生成） ──
     workflow.add_edge("web_search", END)
-
-    # transform_query → retrieve（重新检索循环）
-    workflow.add_edge("transform_query", "retrieve")
 
     # 编译图（带内存检查点，支持状态持久化）
     checkpointer = MemorySaver()

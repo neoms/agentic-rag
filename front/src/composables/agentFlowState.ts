@@ -14,10 +14,8 @@ export const enableGradeDocuments: Ref<boolean> = ref(true)
 export const enableTransformQuery: Ref<boolean> = ref(true)
 export const enableWebSearch: Ref<boolean> = ref(false)
 export const enableReflection: Ref<boolean> = ref(true)
-export const enableBm25: Ref<boolean> = ref(false)
-export const enableHyde: Ref<boolean> = ref(false)
+export const enableBm25: Ref<boolean> = ref(true)
 export const enableMultiQuery: Ref<boolean> = ref(false)
-export const enableKg: Ref<boolean> = ref(false)
 
 /** 每轮提问的节点 I/O 数据记录（仅前端，新提问时清空）
  *  key = 节点 ID (如 'retrieve')
