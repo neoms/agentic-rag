@@ -111,8 +111,12 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _extract_keywords(text: str) -> set[str]:
+def _extract_keywords(text: str) -> tuple[set[str], int]:
     """多层级关键词提取（jieba 词 + 字符级 bigram 补充）
+
+    返回 (keywords, core_count)：
+      - keywords: jieba 词 ∪ bigram 补充（用于 set 交集匹配）
+      - core_count: jieba 原始有效词数（用于计算过滤阈值，屏蔽 bigram 噪声）
 
     解决 jieba 跨文本分词不一致的问题：
       query 中"教育领域"是 1 个词，文档中可能被切成"教育"+"领域"
@@ -125,13 +129,14 @@ def _extract_keywords(text: str) -> set[str]:
         if len(wl) >= 2 and wl not in _GRADE_STOP_WORDS:
             words.add(wl)
 
+    core_count = len(words)  # 记录原始词数，用于阈值计算
+
     # Level 2: 字符级 bigram 补充（仅对 3+ 字符的中文/混合词展开）
     #   例: "人工智能" → "人工"+"工智"+"智能"
     #        "教育领域" → "教育"+"育领"+"领域"
     #   "人工"/"智能"/"教育"/"领域" 比原词更容易跨分词边界匹配
     bigrams: set[str] = set()
     for w in words:
-        # 过滤纯英文词（英文不需要 bigram）
         if w.isascii():
             continue
         if len(w) >= 3:
@@ -140,19 +145,18 @@ def _extract_keywords(text: str) -> set[str]:
                 if bg not in _GRADE_STOP_WORDS:
                     bigrams.add(bg)
 
-    return words | bigrams
+    return words | bigrams, core_count
 
 
 def grade_documents(state: AgentState) -> dict[str, Any]:
     """文档评估节点：判断检索结果是否与问题相关
 
-    优化策略：
-    1. 关键词预过滤（jieba 词 + bigram，跳过 LLM）
-    2. LLM 精确评估（仅预过滤未命中时调用 qwen-turbo）
-    3. 精简 token：最多 3 篇 × 200 字符
-
-    开关控制已提升到 graph 层 route_after_merge / route_after_rerank 条件边，
-    此处只处理业务逻辑。
+    新增文档过滤逻辑：
+    - 对所有文档做 jieba 关键词评分（0 额外 API 开销）
+    - 文档数 ≤ 3：全部保留，不做过滤（防数据丢失）
+    - 文档数 4-5：宽松过滤，剔除 overlap=0 的文档
+    - 文档数 ≥ 6：严格过滤，剔除 overlap < 阈值的文档
+    - 无论哪种情况，保底至少保留 1 篇最高分文档
     """
     documents = state.get("documents", [])
     query = state["query"]
@@ -161,57 +165,96 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
         logger.info("评估节点: 无检索结果")
         return {
             "documents_relevant": False,
+            "documents": [],
             "agent_path": ["grade_documents (no results)"],
         }
 
     logger.info("评估节点: 评估 %d 个文档", len(documents))
 
-    # ── 关键词预过滤（jieba 词 + bigram，跳过 LLM） ──
-    query_keywords = _extract_keywords(query)
+    # ── 关键词评分（所有文档，0 额外 API 开销） ──
+    query_keywords, query_core_count = _extract_keywords(query)
 
+    # (overlap, doc_index, doc) — 记录每篇的 overlap 分
+    scored: list[tuple[int, int, Document]] = []
+    for idx, doc in enumerate(documents):
+        if query_keywords:
+            doc_keywords, _ = _extract_keywords(doc.page_content)
+            overlap = len(query_keywords & doc_keywords)
+        else:
+            overlap = 0
+        scored.append((overlap, idx, doc))
+
+    # ── 文档过滤（按数量分档，阈值按 query 词数比例动态调整） ──
+    total = len(documents)
+    MIN_KEEP = 3  # ≤ 此数量时全部保留
+
+    # 比例阈值：query 词越多，要求匹配越多
+    #   ceil(core_count × 0.4)，至少为 1
+    #   如: 2词→1, 3词→2, 5词→2, 7词→3, 10词→4
+    match_thresh = max(1, int(query_core_count * 0.4 + 0.99))
+    # 快速路径 / 严格过滤用同一比例阈值
+    threshold = match_thresh
+
+    if total <= MIN_KEEP:
+        # 文档太少 → 全部保留，不做任何过滤
+        _filter_note = "keep_all (docs≤3)"
+        filtered = list(documents)
+    else:
+        if total <= 5:
+            # 文档略少 → 仅剔除完全无关的（overlap=0）
+            _filter_note = "relaxed (docs 4-5)"
+            keep_indices = {idx for overlap, idx, _ in scored if overlap >= 1}
+        else:
+            # 文档充足 → 严格剔除（overlap < threshold）
+            _filter_note = f"strict (docs≥6, thresh={threshold}, core_words={query_core_count})"
+            keep_indices = {idx for overlap, idx, _ in scored if overlap >= threshold}
+
+        # 保底：至少保留 1 篇最高分
+        if not keep_indices:
+            best_idx = max(scored, key=lambda x: x[0])[1]
+            keep_indices = {best_idx}
+            _filter_note += " + fallback_best1"
+
+        filtered = [d for i, d in enumerate(documents) if i in keep_indices]
+
+    logger.info("评估节点: 过滤结果: %d→%d docs (%s)", total, len(filtered), _filter_note)
+
+    # ── 快速路径检查（任一保留文档 overlap 达标） ──
     if query_keywords:
-        # 自适应阈值
-        qk_count = len(query_keywords)
-        threshold = 3 if qk_count >= 4 else (2 if qk_count >= 3 else 1)
+        for overlap, idx, doc in scored:
+            if idx in {i for i, d in enumerate(documents) if d in filtered}:
+                if overlap >= threshold:
+                    logger.info(
+                        "评估节点: 快速路径 → RELEVANT (overlap=%d/%d, keep=%d docs)",
+                        overlap, qk_count, len(filtered),
+                    )
+                    return {
+                        "documents_relevant": True,
+                        "documents": filtered,
+                        "agent_path": ["grade_documents (keyword match)"],
+                    }
 
-        for doc in documents:
-            doc_keywords = _extract_keywords(doc.page_content)
-            overlap = query_keywords & doc_keywords
-            if len(overlap) >= threshold:
-                logger.info(
-                    "评估节点: jieba 预过滤 → RELEVANT (overlap=%d/%d, thresh=%d, words=%s)",
-                    len(overlap), qk_count, threshold, overlap,
-                )
-                return {
-                    "documents_relevant": True,
-                    "agent_path": ["grade_documents (keyword match)"],
-                }
-
-    # ── LLM 精确评估（关键词匹配不足时降级到 LLM） ──
+    # ── LLM 精确评估（用过滤后文档中 top 3） ──
     llm = create_fast_llm()
-
-    # 精简文档上下文：最多 3 篇 × 200 字符（仅需判断相关性，无需全文）
-    max_docs = min(len(documents), 3)
+    llm_docs = filtered[:3]
     docs_text = "\n".join(
-        f"[{i+1}] {doc.page_content[:200]}"
-        for i, doc in enumerate(documents[:max_docs])
+        f"[{i+1}] {doc.page_content[:200]}" for i, doc in enumerate(llm_docs)
     )
-
     messages = [
         HumanMessage(content=GRADE_DOCUMENTS_SYSTEM),
         HumanMessage(
             content=GRADE_DOCUMENTS_USER.format(query=query, documents=docs_text)
         ),
     ]
-
     response = llm.invoke(messages)
     result = response.content.strip().upper()
     relevant = result == "RELEVANT"
 
-    logger.info("评估结果: %s (raw='%s')", "RELEVANT" if relevant else "IRRELEVANT", result)
+    logger.info("评估结果: %s (docs=%d, raw='%s')", "RELEVANT" if relevant else "IRRELEVANT", len(filtered), result)
 
     return {
         "documents_relevant": relevant,
+        "documents": filtered,  # 返回值始终是过滤后的文档
         "agent_path": ["grade_documents"],
     }
 
