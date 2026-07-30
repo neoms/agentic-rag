@@ -81,8 +81,9 @@ class RAGService:
             "analyze_kg_intent", "parallel_retrieve_merge",
         }
         # 线性节点后继（用于预测 node_start）
+        # analyze_kg_intent → parallel_retrieve_merge 在策略节点全部完成后由
+        # parallel_retrieve_merge_node 内部自行激活，不在此预测
         LINEAR_NEXT: dict[str, str] = {
-            "analyze_kg_intent": "parallel_retrieve_merge",
             "parallel_retrieve_merge": "rerank_documents",
         }
 
@@ -107,7 +108,7 @@ class RAGService:
                         logger.info(
                             "[stream_rag] 自定义事件: %s → %s", node_name, custom_event,
                         )
-                        # 记录策略子节点的耗时
+                        # 记录节点耗时（策略子节点已只推送 node_step）
                         if custom_event == "node_start":
                             node_start_ts[node_name] = time.perf_counter() * 1000
                         elif custom_event == "node_step" and node_name in node_start_ts:
@@ -152,6 +153,12 @@ class RAGService:
             if node_id in node_data:
                 node_data[node_id]["durationMs"] = duration_ms
 
+        # 将策略级独立耗时注入 node_data（从 parallel_retrieve_merge_node 返回的 state）
+        strategy_timings = result.get("strategy_timings_ms", {})
+        for node_id, duration_ms in strategy_timings.items():
+            if node_id in node_data:
+                node_data[node_id]["durationMs"] = duration_ms
+
         agent_path = result.get("agent_path", [])
         agent_path = [p for p in agent_path if "skipped" not in p]
         # 补充外部生成路径标记（generate/check_hallucination 已从图中移除）
@@ -183,6 +190,7 @@ class RAGService:
         )
 
         # 图执行完成，开始外部流式生成
+        node_start_ts["generate"] = time.perf_counter() * 1000
         yield StreamEvent(event="node_start", data="generate")
 
         if documents:
@@ -208,6 +216,10 @@ class RAGService:
                     yield StreamEvent(event="token", data=chunk.content)
 
             # 标记 generate 已完成（让流程图在幻觉检测前就显示生成完成）
+            if "generate" in node_start_ts:
+                node_timings["generate"] = round(
+                    time.perf_counter() * 1000 - node_start_ts.pop("generate"), 1
+                )
             yield StreamEvent(event="node_step", data="generate")
 
             # 4. 填充 generate 节点 I/O 数据
@@ -219,10 +231,15 @@ class RAGService:
             hallucination_passed = True
             hallucination_faithfulness = 100.0
             if request.enable_reflection:
+                node_start_ts["check_hallucination"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="check_hallucination")
                 hallucination_passed, hallucination_faithfulness = (
                     await check_hallucination_async(documents, full_answer)
                 )
+                if "check_hallucination" in node_start_ts:
+                    node_timings["check_hallucination"] = round(
+                        time.perf_counter() * 1000 - node_start_ts.pop("check_hallucination"), 1
+                    )
                 yield StreamEvent(event="node_step", data="check_hallucination")
                 yield StreamEvent(
                     event="hallucination",

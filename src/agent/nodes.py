@@ -274,11 +274,14 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     enable_mq = state.get("enable_multi_query", False)
     enable_kg = state.get("enable_kg", False) and state.get("kg_intent", False)
 
+    # 各策略独立耗时（毫秒）
+    strategy_timings_ms: dict[str, float] = {}
+
     # ── 1. 语义 + MMR（复用 retrieve()） ──
-    _push("node_start", "retrieve")
     base = retrieve(state)["documents"]
-    _push("node_step", "retrieve")
     elapsed_sem = round(time.perf_counter() - t_start, 3)
+    strategy_timings_ms["retrieve"] = round(elapsed_sem * 1000, 1)
+    _push("node_step", "retrieve")
     logger.info("[PARALLEL_MERGE] 语义+MMR: %d docs (%.3fs)", len(base), elapsed_sem)
 
     # ── 2. 线程池并行（BM25 / Multi-Query / KG_LLM） ──
@@ -286,31 +289,30 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     futures: dict[str, Any] = {}
 
     if enable_bm25:
-        _push("node_start", "bm25_retrieve")
         futures["bm25"] = _EXECUTOR.submit(
             bm25_retriever.search, query, settings.retrieval_top_k,
         )
     if enable_mq:
-        _push("node_start", "multi_query_retrieve")
         futures["multi"] = _EXECUTOR.submit(_run_multi_query, query)
     if enable_kg:
-        _push("node_start", "kg_retrieve")
         futures["kg_extract"] = _EXECUTOR.submit(
             _run_kg_extraction, query, settings.kg_max_entities,
         )
 
     for name, fut in futures.items():
+        t_fut_start = time.perf_counter()
         try:
             parallel_docs[name] = fut.result(timeout=120)
         except Exception as e:
             logger.warning("[PARALLEL_MERGE] %s 线程异常: %s", name, e)
             parallel_docs[name] = [] if name != "kg_extract" else None
-        # 线程完成 → 立即推送 node_step（前端实时显示完成状态）
+        # 线程完成 → 推送 node_step + 记录该策略耗时
         step_name = {
             "bm25": "bm25_retrieve",
             "multi": "multi_query_retrieve",
             "kg_extract": "kg_retrieve",
         }.get(name, name)
+        strategy_timings_ms[step_name] = round((time.perf_counter() - t_fut_start) * 1000, 1)
         _push("node_step", step_name)
 
     elapsed_parallel = round(time.perf_counter() - t_start, 3)
@@ -321,6 +323,9 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
         "done" if parallel_docs.get("kg_extract") else "skip",
         elapsed_parallel - elapsed_sem,
     )
+
+    # 所有策略子任务已完成，现在才激活检索合并节点（让父节点在子任务后点亮）
+    _push("node_start", "parallel_retrieve_merge")
 
     # ── 3. KG Kuzu 查询（主线程，非线程安全但仅 ~10ms） ──
     kg_context = ""
@@ -379,6 +384,7 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
         "documents": merged,
         "agent_path": ["parallel_retrieve_merge"],
         "kg_context": kg_context,
+        "strategy_timings_ms": strategy_timings_ms,
         # 保留各策略独立结果（供前端节点详情分别展示）
         "documents_semantic": base,
         "documents_bm25": parallel_docs.get("bm25", []),

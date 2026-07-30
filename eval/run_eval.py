@@ -199,6 +199,7 @@ def target_fn(inputs: dict) -> dict:
         enable_kg=_eval_config.get("enable_kg", False),
         enable_multi_query=_eval_config.get("enable_multi_query", False),
         enable_bm25=_eval_config.get("enable_bm25", True),
+    )
 
     t_start = time.perf_counter()
     result = asyncio.run(_consume_stream(request))
