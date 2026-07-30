@@ -70,16 +70,15 @@
 
 根据文档ID删除文档及其所有分块。
 
-### 2.4 对话接口（Agent模式）
+### 2.4 对话接口（流式 Agent 模式）
 
-**接口**: `POST /api/chat/agentic`
+**接口**: `POST /api/v1/chat/stream`
 
-使用完整的 Agent 工作流处理对话。支持流式和非流式两种模式。
+使用完整的 Agent 工作流处理对话，SSE 流式输出。
 
 请求体参数：
 - **query** (必填): 用户问题
 - **session_id** (可选): 会话ID，用于多轮对话
-- **stream** (可选): 是否流式输出，默认 false
 - **enable_web_search** (可选): 启用联网搜索，默认 false
 - **enable_reflection** (可选): 启用自反思检测，默认 true
 - **enable_rerank** (可选): 启用重排序，默认 true

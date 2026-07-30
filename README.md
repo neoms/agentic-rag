@@ -93,9 +93,7 @@ npm run build     # 构建生产包到 front/dist/
 | POST | `/api/v1/documents/upload` | 上传文档（PDF/MD/TXT，最大 10MB） |
 | GET | `/api/v1/documents` | 列出已索引文档 |
 | DELETE | `/api/v1/documents/{doc_id}` | 删除文档及其向量块 |
-| POST | `/api/v1/chat/simple` | 基础 RAG 对话 |
-| POST | `/api/v1/chat/agentic` | Agent 模式对话（自反思 + 工具调用） |
-| POST | `/api/v1/chat/stream` | Agent 流式对话（SSE，事件类型：source/path/token/done/error） |
+| POST | `/api/v1/chat/stream` | Agent 流式对话（SSE，事件类型：source/path/token/done/error/hallucination等） |
 | GET | `/api/v1/chat/history/{session_id}` | 获取会话历史 |
 
 ### Agentic 请求体参数

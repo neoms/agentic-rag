@@ -25,6 +25,7 @@
 import sys
 import json
 import time
+import asyncio
 import logging
 import re
 import argparse
@@ -38,7 +39,7 @@ from langsmith.evaluation import evaluate
 from langsmith.schemas import Example, Run
 
 from src.services.rag_service import rag_service
-from src.models.chat import AgenticChatRequest
+from src.models.chat import AgenticChatRequest, SourceDocument
 from src.services.document_service import document_service
 from src.store.vector_store import vector_store
 from src.backend.llm import create_fast_llm
@@ -148,15 +149,51 @@ def create_langsmith_dataset(version: str, examples: list[dict]) -> str:
 _eval_config: dict = {}
 
 
+async def _consume_stream(request: AgenticChatRequest) -> dict:
+    """消费流式事件，聚合为结构化评估结果"""
+    answer = ""
+    sources: list[SourceDocument] = []
+    agent_path: list[str] = []
+    reflection_count = 0
+
+    async for event in rag_service.agentic_rag_stream(request):
+        if event.event == "token":
+            answer += event.data
+        elif event.event == "source":
+            try:
+                raw = json.loads(event.data)
+                sources = [SourceDocument(**s) for s in raw]
+            except Exception:
+                pass
+        elif event.event == "path":
+            try:
+                agent_path = json.loads(event.data)
+            except Exception:
+                pass
+        elif event.event == "hallucination":
+            try:
+                hr = json.loads(event.data)
+                if not hr.get("passed", True):
+                    reflection_count += 1
+            except Exception:
+                pass
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "agent_path": agent_path,
+        "reflection_count": reflection_count,
+    }
+
+
 def target_fn(inputs: dict) -> dict:
-    """评估目标函数 — 调用 Agentic RAG，记录延迟"""
+    """评估目标函数 — 调用 Agentic RAG 流式接口，记录延迟"""
     question = inputs["question"]
     logger.info("RAG 请求: %s", question[:60])
 
     request = AgenticChatRequest(
         query=question,
         session_id=f"eval-{abs(hash(question)) % 10000}",
-        stream=False,
         enable_web_search=False,
         enable_reflection=True,
         enable_kg=_eval_config.get("enable_kg", False),
@@ -166,7 +203,7 @@ def target_fn(inputs: dict) -> dict:
     )
 
     t_start = time.perf_counter()
-    result = rag_service.agentic_rag(request)
+    result = asyncio.run(_consume_stream(request))
     elapsed = round(time.perf_counter() - t_start, 3)
 
     sources = [
@@ -175,14 +212,14 @@ def target_fn(inputs: dict) -> dict:
             "filename": s.metadata.get("filename", "unknown"),
             "rerank_score": s.metadata.get("rerank_score"),
         }
-        for s in result.sources
+        for s in result["sources"]
     ]
 
     return {
-        "answer": result.answer,
+        "answer": result["answer"],
         "sources": json.dumps(sources, ensure_ascii=False),
-        "agent_path": json.dumps(result.agent_path, ensure_ascii=False),
-        "reflection_count": result.reflection_count,
+        "agent_path": json.dumps(result["agent_path"], ensure_ascii=False),
+        "reflection_count": result["reflection_count"],
         "latency_seconds": elapsed,
     }
 
