@@ -69,7 +69,7 @@ class RAGService:
             "documents_bm25": [],
             "documents_multi_query": [],
             "strategy_timings_ms": {},
-            "enable_kg": True,  # 由意图分析自动决定是否实际启用
+            "enable_kg": request.enable_kg,  # 由意图分析自动决定是否实际启用
             "kg_intent": False,
             "kg_context": "",
         }

@@ -16,6 +16,7 @@ export const enableWebSearch: Ref<boolean> = ref(false)
 export const enableReflection: Ref<boolean> = ref(true)
 export const enableBm25: Ref<boolean> = ref(true)
 export const enableMultiQuery: Ref<boolean> = ref(false)
+export const enableKg: Ref<boolean> = ref(true)
 
 /** 每轮提问的节点 I/O 数据记录（仅前端，新提问时清空）
  *  key = 节点 ID (如 'retrieve')

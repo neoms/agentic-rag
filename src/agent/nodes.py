@@ -396,38 +396,6 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _run_kg_extraction(query: str, max_entities: int) -> list[str] | None:
-    """Thread-safe: KG LLM 实体抽取（仅 HTTP API，线程安全）
-
-    Returns: 实体名列表，或 None（抽取失败）
-    """
-    from src.agent.prompts import KG_RETRIEVE_ENTITY_EXTRACT_USER
-    try:
-        llm = create_fast_llm()
-        prompt = KG_RETRIEVE_ENTITY_EXTRACT_USER.format(
-            query=query, max_entities=max_entities,
-        )
-        response = llm.invoke(prompt)
-        raw = response.content.strip()
-        entities: list[str] = []
-        for line in raw.split("\n"):
-            line = line.strip()
-            if line and len(line) > 1:
-                if line[0].isdigit() and (". " in line[:4] or "、" in line[:4]):
-                    line = line.split(". ", 1)[-1] if ". " in line[:4] else line.split("、", 1)[-1]
-                line = line.strip()
-                if line:
-                    entities.append(line)
-        if not entities and raw:
-            entities = [raw[:50]]
-        result = entities[:max_entities]
-        logger.debug("[KG_EXTRACT] LLM 抽取: %s", result)
-        return result
-    except Exception as e:
-        logger.warning("[KG_EXTRACT] 异常: %s", e)
-        return None
-
-
 def _run_multi_query(query: str) -> list[Document]:
     """Thread-safe Multi-Query 内部实现"""
     from src.backend.llm import create_fast_llm

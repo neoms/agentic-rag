@@ -28,7 +28,6 @@ from src.agent.nodes import (
     grade_documents,
     transform_query,
     web_search_node,
-    tool_node,
     analyze_kg_intent_node,
     parallel_retrieve_merge_node,
 )
@@ -77,6 +76,24 @@ def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_
     return "end"
 
 
+def route_after_merge(
+    state: AgentState,
+) -> Literal["rerank_documents", "grade_documents", "end"]:
+    """并行检索合并后的条件路由
+
+    - rerank 开启 → 正常走重排序
+    - rerank 关闭 + grade 开启 → 跳过 rerank 直接评估
+    - 两者都关 → 图结束（外部生成）
+    """
+    if state.get("enable_rerank", True):
+        return "rerank_documents"
+    if state.get("enable_grade_documents", True):
+        logger.info("路由: rerank 已关闭 → 跳过 rerank，直接 grade")
+        return "grade_documents"
+    logger.info("路由: rerank+grade 均关闭 → end")
+    return "end"
+
+
 def route_after_rerank(
     state: AgentState,
 ) -> Literal["grade_documents", "end"]:
@@ -113,14 +130,21 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("grade_documents", grade_documents)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
-    workflow.add_node("tools", tool_node)
 
     # ── 入口 → 意图分析 → 并行检索 + 合并 ──
     workflow.set_entry_point("analyze_kg_intent")
     workflow.add_edge("analyze_kg_intent", "parallel_retrieve_merge")
 
-    # ── 并行检索 → rerank ──
-    workflow.add_edge("parallel_retrieve_merge", "rerank_documents")
+    # ── 并行检索 → rerank / grade / end（条件跳过 rerank） ──
+    workflow.add_conditional_edges(
+        "parallel_retrieve_merge",
+        route_after_merge,
+        {
+            "rerank_documents": "rerank_documents",
+            "grade_documents": "grade_documents",
+            "end": END,
+        },
+    )
 
     # ── 查询重写循环 → retrieve → rerank ──
     workflow.add_edge("transform_query", "retrieve")

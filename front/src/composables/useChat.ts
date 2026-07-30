@@ -280,6 +280,7 @@ export function useChat() {
         enable_transform_query: enableTransformQuery.value,
         enable_bm25: flow.enableBm25.value,
         enable_multi_query: flow.enableMultiQuery.value,
+        enable_kg: flow.enableKg.value,
       })
 
       reader = response.body?.getReader() ?? null

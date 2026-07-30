@@ -14,6 +14,7 @@ class AgenticChatRequest(BaseModel):
     enable_transform_query: bool = True
     enable_bm25: bool = True
     enable_multi_query: bool = False
+    enable_kg: bool = True
 
 
 class SourceDocument(BaseModel):

@@ -18,6 +18,7 @@ export interface AgenticChatRequest {
   enable_transform_query?: boolean
   enable_bm25?: boolean
   enable_multi_query?: boolean
+  enable_kg?: boolean
 }
 
 export interface SourceDocument {
@@ -38,7 +39,7 @@ export interface ChatHistoryResponse {
 }
 
 // ===== SSE 流式事件 =====
-export type SSEEventType = 'source' | 'citations' | 'path' | 'token' | 'done' | 'error' | 'hallucination' | 'node_start' | 'node_step'
+export type SSEEventType = 'source' | 'citations' | 'path' | 'token' | 'done' | 'error' | 'hallucination' | 'node_start' | 'node_step' | 'node_data'
 
 export interface SSEEvent {
   type: SSEEventType
