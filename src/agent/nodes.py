@@ -252,10 +252,11 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     在一个节点内完成所有策略的并行执行和合并。
     使用 get_stream_writer() 将子策略的开始/结束事件实时推送到前端流程图。
 
-    1. 语义 + MMR（复用 retrieve()）
-    2. BM25 / Multi-Query / KG_LLM（线程池并行）
-    3. KG Kuzu 查询（主线程）
-    4. 合并去重（仅执行一次）
+    1. 预计算 query embedding（一次 API 调用）
+    2. 语义检索 + MMR（复用同一 embedding，零额外 API 开销）
+    3. BM25 / Multi-Query / KG_LLM（线程池并行）
+    4. KG Kuzu 查询（主线程）
+    5. 合并去重（仅执行一次）
     """
     from langgraph.config import get_stream_writer
     writer = get_stream_writer()
@@ -277,8 +278,25 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     # 各策略独立耗时（毫秒）
     strategy_timings_ms: dict[str, float] = {}
 
-    # ── 1. 语义 + MMR（复用 retrieve()） ──
-    base = retrieve(state)["documents"]
+    # ── 1. 预计算 query embedding（仅一次 API 调用） ──
+    query_embedding = get_embedding_client().embed_query(query)
+
+    # 语义检索（复用已计算的 embedding）
+    semantic_results = vector_store.search_by_embedding(
+        query_embedding, top_k=settings.retrieval_top_k,
+    )
+    semantic_docs = [doc for doc, _ in semantic_results]
+
+    # MMR 多样性检索（复用同一 embedding，零额外 API 开销）
+    try:
+        mmr_docs = vector_store.search_mmr_by_embedding(
+            query_embedding, top_k=settings.retrieval_top_k,
+        )
+    except Exception:
+        mmr_docs = []
+
+    # 合并去重
+    base = _merge_documents(semantic_docs, mmr_docs)
     elapsed_sem = round(time.perf_counter() - t_start, 3)
     strategy_timings_ms["retrieve"] = round(elapsed_sem * 1000, 1)
     _push("node_step", "retrieve")

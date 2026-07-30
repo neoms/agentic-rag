@@ -55,7 +55,7 @@ class Settings(BaseSettings):
             return {}
 
     # ========== 检索 ==========
-    retrieval_top_k: int = 20
+    retrieval_top_k: int = 12
     retrieval_similarity_threshold: float = 0.5
 
     # ========== 重排序 ==========

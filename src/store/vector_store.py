@@ -100,6 +100,60 @@ class VectorStore:
         logger.info("检索 %d 个结果，过滤后 %d 个", len(results), len(filtered))
         return filtered
 
+    def search_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int | None = None,
+        filter_metadata: dict | None = None,
+    ) -> list[tuple[Document, float]]:
+        """使用预计算 embedding 的语义检索（避免再次调用 Embedding API）
+
+        Args:
+            query_embedding: 预计算的 query 向量
+            top_k: 返回结果数
+            filter_metadata: 元数据过滤条件
+
+        Returns:
+            (Document, 相似度分数) 列表
+        """
+        k = top_k or settings.retrieval_top_k
+        results = self.vector_store.similarity_search_by_vector_with_relevance_scores(
+            query_embedding, k=k, filter=filter_metadata,
+        )
+        filtered = [
+            (doc, score) for doc, score in results
+            if score >= settings.retrieval_similarity_threshold
+        ]
+        logger.info("检索 %d 个结果，过滤后 %d 个", len(results), len(filtered))
+        return filtered
+
+    def search_mmr_by_embedding(
+        self,
+        query_embedding: list[float],
+        top_k: int | None = None,
+        fetch_k: int = 20,
+        lambda_mult: float = 0.7,
+    ) -> list[Document]:
+        """使用预计算 embedding 的 MMR 检索（避免再次调用 Embedding API）
+
+        Args:
+            query_embedding: 预计算的 query 向量
+            top_k: 返回结果数
+            fetch_k: 初始获取数量
+            lambda_mult: 多样性权重（0=最大多样性，1=最大相似度）
+
+        Returns:
+            文档列表
+        """
+        k = top_k or settings.retrieval_top_k
+        logger.info("MMR 检索: top_k=%d, fetch_k=%d, lambda=%.1f",
+                     k, fetch_k, lambda_mult)
+        docs = self.vector_store.max_marginal_relevance_search_by_vector(
+            query_embedding, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult,
+        )
+        logger.info("MMR 检索完成: %d 个结果", len(docs))
+        return docs
+
     def search_mmr(
         self,
         query: str,
