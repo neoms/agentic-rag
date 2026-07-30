@@ -111,13 +111,45 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
     }
 
 
+def _extract_keywords(text: str) -> set[str]:
+    """多层级关键词提取（jieba 词 + 字符级 bigram 补充）
+
+    解决 jieba 跨文本分词不一致的问题：
+      query 中"教育领域"是 1 个词，文档中可能被切成"教育"+"领域"
+      → 通过 bigram 补充，使"教育"、"领域"各自作为匹配候选
+    """
+    # Level 1: jieba 精确分词词（过滤单字+停用词）
+    words: set[str] = set()
+    for w in jieba.lcut(text):
+        wl = w.lower().strip()
+        if len(wl) >= 2 and wl not in _GRADE_STOP_WORDS:
+            words.add(wl)
+
+    # Level 2: 字符级 bigram 补充（仅对 3+ 字符的中文/混合词展开）
+    #   例: "人工智能" → "人工"+"工智"+"智能"
+    #        "教育领域" → "教育"+"育领"+"领域"
+    #   "人工"/"智能"/"教育"/"领域" 比原词更容易跨分词边界匹配
+    bigrams: set[str] = set()
+    for w in words:
+        # 过滤纯英文词（英文不需要 bigram）
+        if w.isascii():
+            continue
+        if len(w) >= 3:
+            for i in range(len(w) - 1):
+                bg = w[i:i+2]
+                if bg not in _GRADE_STOP_WORDS:
+                    bigrams.add(bg)
+
+    return words | bigrams
+
+
 def grade_documents(state: AgentState) -> dict[str, Any]:
     """文档评估节点：判断检索结果是否与问题相关
 
     优化策略：
-    1. 关键词预过滤：提取 query 中的名词关键词，快速检测文档中是否包含
-    2. LLM 精确评估：仅当关键词匹配失败时调用 qwen-turbo
-    3. 精简 token：最多 5 篇文档 × 每篇 300 字符
+    1. 关键词预过滤（jieba 词 + bigram，跳过 LLM）
+    2. LLM 精确评估（仅预过滤未命中时调用 qwen-turbo）
+    3. 精简 token：最多 3 篇 × 200 字符
 
     开关控制已提升到 graph 层 route_after_merge / route_after_rerank 条件边，
     此处只处理业务逻辑。
@@ -134,32 +166,21 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
 
     logger.info("评估节点: 评估 %d 个文档", len(documents))
 
-    # ── 关键词预过滤（jieba 分词 + Set 交集，跳过 LLM） ──
-    # 1) 停用词过滤：去除跨领域高频词，保留实质性关键词
-    # 2) 自适应阈值：短 query 降低门槛，避免锁死在 LLM 路径
-    query_words = {
-        w.lower() for w in jieba.lcut(query)
-        if len(w) >= 2 and w.lower() not in _GRADE_STOP_WORDS
-    }
+    # ── 关键词预过滤（jieba 词 + bigram，跳过 LLM） ──
+    query_keywords = _extract_keywords(query)
 
-    if query_words:
-        # 自适应阈值：query 词数越多，要求匹配越多
-        #   query 词数 1-2 → 阈值 1 (有任一实质性词匹配即判定相关)
-        #   query 词数 3   → 阈值 2
-        #   query 词数 4+  → 阈值 3
-        qw_count = len(query_words)
-        threshold = 3 if qw_count >= 4 else (2 if qw_count >= 3 else 1)
+    if query_keywords:
+        # 自适应阈值
+        qk_count = len(query_keywords)
+        threshold = 3 if qk_count >= 4 else (2 if qk_count >= 3 else 1)
 
         for doc in documents:
-            doc_words = {
-                w.lower() for w in jieba.lcut(doc.page_content)
-                if len(w) >= 2 and w.lower() not in _GRADE_STOP_WORDS
-            }
-            overlap = query_words & doc_words
+            doc_keywords = _extract_keywords(doc.page_content)
+            overlap = query_keywords & doc_keywords
             if len(overlap) >= threshold:
                 logger.info(
                     "评估节点: jieba 预过滤 → RELEVANT (overlap=%d/%d, thresh=%d, words=%s)",
-                    len(overlap), qw_count, threshold, overlap,
+                    len(overlap), qk_count, threshold, overlap,
                 )
                 return {
                     "documents_relevant": True,
