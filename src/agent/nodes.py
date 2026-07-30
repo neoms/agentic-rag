@@ -8,6 +8,7 @@
 """
 
 import logging
+import jieba
 from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage
@@ -113,6 +114,11 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
 def grade_documents(state: AgentState) -> dict[str, Any]:
     """文档评估节点：判断检索结果是否与问题相关
 
+    优化策略：
+    1. 关键词预过滤：提取 query 中的名词关键词，快速检测文档中是否包含
+    2. LLM 精确评估：仅当关键词匹配失败时调用 qwen-turbo
+    3. 精简 token：最多 5 篇文档 × 每篇 300 字符
+
     开关控制已提升到 graph 层 route_after_merge / route_after_rerank 条件边，
     此处只处理业务逻辑。
     """
@@ -128,13 +134,46 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
 
     logger.info("评估节点: 评估 %d 个文档", len(documents))
 
-    # 用快速模型评估（节省成本）
+    # ── 关键词预过滤（jieba 分词 + Set 交集，跳过 LLM） ──
+    # 1) 停用词过滤：去除跨领域高频词，保留实质性关键词
+    # 2) 自适应阈值：短 query 降低门槛，避免锁死在 LLM 路径
+    query_words = {
+        w.lower() for w in jieba.lcut(query)
+        if len(w) >= 2 and w.lower() not in _GRADE_STOP_WORDS
+    }
+
+    if query_words:
+        # 自适应阈值：query 词数越多，要求匹配越多
+        #   query 词数 1-2 → 阈值 1 (有任一实质性词匹配即判定相关)
+        #   query 词数 3   → 阈值 2
+        #   query 词数 4+  → 阈值 3
+        qw_count = len(query_words)
+        threshold = 3 if qw_count >= 4 else (2 if qw_count >= 3 else 1)
+
+        for doc in documents:
+            doc_words = {
+                w.lower() for w in jieba.lcut(doc.page_content)
+                if len(w) >= 2 and w.lower() not in _GRADE_STOP_WORDS
+            }
+            overlap = query_words & doc_words
+            if len(overlap) >= threshold:
+                logger.info(
+                    "评估节点: jieba 预过滤 → RELEVANT (overlap=%d/%d, thresh=%d, words=%s)",
+                    len(overlap), qw_count, threshold, overlap,
+                )
+                return {
+                    "documents_relevant": True,
+                    "agent_path": ["grade_documents (keyword match)"],
+                }
+
+    # ── LLM 精确评估（关键词匹配不足时降级到 LLM） ──
     llm = create_fast_llm()
 
-    # 格式化文档内容
-    docs_text = "\n---\n".join(
-        f"[文档 {i+1}] {doc.page_content[:500]}"
-        for i, doc in enumerate(documents[:10])
+    # 精简文档上下文：最多 3 篇 × 200 字符（仅需判断相关性，无需全文）
+    max_docs = min(len(documents), 3)
+    docs_text = "\n".join(
+        f"[{i+1}] {doc.page_content[:200]}"
+        for i, doc in enumerate(documents[:max_docs])
     )
 
     messages = [
@@ -231,6 +270,15 @@ def decide_retrieval_strategy(state: AgentState) -> dict[str, Any]:
 
     return {"agent_path": ["decide_strategy"]}
 
+
+# ── 评估节点停用词表（跨领域高频词，无语义区分度） ──
+_GRADE_STOP_WORDS: frozenset[str] = frozenset({
+    "影响", "使用", "情况", "方面", "进行", "通过", "可以", "需要",
+    "相关", "不同", "包括", "以及", "用于", "基于", "作为", "其中",
+    "应用", "提供", "实现", "产生", "具有", "主要", "比较", "一定",
+    "很大", "可能", "利用", "方式", "方法", "问题", "特点", "特征",
+    "优势", "不足", "发展", "研究", "内容", "信息", "数据", "系统",
+})
 
 # ==================== 新增检索策略节点 ====================
 

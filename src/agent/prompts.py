@@ -54,24 +54,12 @@ KG_ENTITY_EXTRACT_USER = """文本内容：
 
 # ==================== 文档相关性评估 ====================
 
-GRADE_DOCUMENTS_SYSTEM = """你是一个严格的检索质量评估专家。你的任务是评估检索到的文档片段是否能够有效回答用户问题。
+GRADE_DOCUMENTS_SYSTEM = """Determine if provided documents contain key info to answer the query. Output only RELEVANT or IRRELEVANT."""
 
-评估标准：
-- 文档内容必须与用户问题的核心主题直接相关
-- 模糊相关或仅包含个别相同词汇不算相关
-- 文档需要包含能够支撑回答的具体信息，不能只是擦边
-
-输出要求：
-- 如果文档内容无法有效回答用户问题，回复 "IRRELEVANT"
-- 只有当文档包含能直接回答问题的关键信息时，才回复 "RELEVANT"
-- 只需要回复 RELEVANT 或 IRRELEVANT，不要输出其他内容"""
-
-GRADE_DOCUMENTS_USER = """用户问题：{query}
-
-检索到的文档片段：
+GRADE_DOCUMENTS_USER = """Query: {query}
+Docs:
 {documents}
-
-请严格评估这些文档片段是否能有效回答用户问题。如果文档内容与问题主题不匹配、不包含关键信息或只是擦边相关，请判定为 IRRELEVANT。"""
+Relevance:"""
 
 # ==================== 查询重写 ====================
 
