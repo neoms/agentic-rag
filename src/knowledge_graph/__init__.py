@@ -1,10 +1,10 @@
 """知识图谱模块 - 实体关系抽取、图存储、图谱检索、意图分析
 
 模块结构:
-    graph_store.py    - GraphStore：NetworkX 图存储 + JSON 持久化
-    graph_builder.py  - GraphBuilder：LLM 实体关系抽取 + 图构建
-    graph_retriever.py - GraphRetriever：实体链接 + 子图提取 + 路径推理
-    kg_intent.py      - KGIntentAnalyzer：LLM 问题意图分析
+    graph_store.py     - GraphStore：Kuzu 图数据库存储（原生持久化）
+    graph_builder.py   - GraphBuilder：LLM 实体关系抽取 + 图构建
+    graph_retriever.py - GraphRetriever：实体链接 + 子图提取 + 路径推理 + numpy 向量索引
+    kg_intent.py       - KGIntentAnalyzer：LLM 问题意图分析
 """
 
 from src.knowledge_graph.graph_store import GraphStore

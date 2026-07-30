@@ -5,7 +5,7 @@
 ## 架构特点
 
 - **多策略并行检索**：语义检索 + MMR 多样性、BM25 关键词、HyDE 假设文档嵌入、Multi-Query 多角度查询，通过 LangGraph Send API 实现 fan-out/fan-in 并行执行，可独立开关控制
-- **知识图谱模块**：NetworkX + JSON 本地持久化，LLM 自动抽取实体关系构建图谱，支持意图分析路由、实体链接、子图提取、多跳路径推理，不适用时平滑降级到原有 RAG 流程
+- **知识图谱模块**：Kuzu 图数据库（原生持久化）+ numpy .npz 二进制向量索引，LLM 自动抽取实体关系构建图谱，支持意图分析路由、实体链接、子图提取、多跳路径推理，不适用时平滑降级到原有 RAG 流程
 - **重排序精排**：LLM Cross-Encoder 对检索结果二次排序，提升 Top-K 文档质量
 - **Agent 智能体**：自反思能力（文档评估 → 查询重写 → 幻觉检测）；支持 Tool Calling（联网搜索、计算器）
 - **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
@@ -13,7 +13,7 @@
 - **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
 - **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
 - **FastAPI + SSE 流式输出**：自动生成 Swagger 文档
-- **ChromaDB 本地持久化**：零外部依赖，数据保存在 `chroma_data/` 目录
+- **ChromaDB 本地持久化**：零外部依赖，数据保存在 `data/chroma/` 目录，文档元数据（doc_id/filename/hash）随块 metadata 一并存储，无需独立注册表
 - **Vue 3 前端**：Vite + TypeScript + TailwindCSS，支持多策略切换、会话历史、拖拽上传、Agent 流程图可视化
 
 ## 快速开始
@@ -39,7 +39,7 @@ cp .env.example .env
 | `LLM_MODEL_FAST` | 快速评估模型 | `qwen-turbo` |
 | `LLM_MODEL_STRONG` | 强生成模型 | `qwen-max` |
 | `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
-| `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `chroma_data` |
+| `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `data/chroma` |
 | `RETRIEVAL_TOP_K` | 检索候选数 | `20` |
 | `RETRIEVAL_SIMILARITY_THRESHOLD` | 语义检索过滤阈值 | `0.5` |
 | `RERANK_ENABLED` | 是否启用重排序 | `true` |
@@ -191,9 +191,9 @@ retrieve (语义+MMR)
 
 | 组件 | 文件 | 功能 |
 |------|------|------|
-| GraphStore | `src/knowledge_graph/graph_store.py` | NetworkX 有向图存储 + JSON 持久化，支持实体/关系 CRUD、子图提取、多跳路径查找 |
+| GraphStore | `src/knowledge_graph/graph_store.py` | Kuzu 图数据库存储（原生持久化），支持实体/关系 CRUD、子图提取、多跳路径查找 |
 | GraphBuilder | `src/knowledge_graph/graph_builder.py` | 文档入库时 LLM 自动抽取实体关系构建图谱 |
-| GraphRetriever | `src/knowledge_graph/graph_retriever.py` | 实体抽取 → Entity Linking → BFS 子图 → 路径推理 → 上下文生成 |
+| GraphRetriever | `src/knowledge_graph/graph_retriever.py` | 实体抽取 → Entity Linking（精确+别名+numpy 语义搜索）→ BFS 子图 → 路径推理 → 上下文生成 |
 | KGIntentAnalyzer | `src/knowledge_graph/kg_intent.py` | LLM 意图分析，判定问题是否适合 KG 查询 |
 
 ### 工作流程
@@ -317,11 +317,11 @@ agentic-rag/
 │   │   ├── nodes.py           # 15 个核心节点实现
 │   │   ├── prompts.py         # Prompt 模板（含 KG 意图分析、实体抽取等）
 │   │   └── tools.py           # Tool Calling（计算器 + DuckDuckGo 搜索）
-│   ├── knowledge_graph/       # 知识图谱模块
+│   ├── knowledge_graph/       # 知识图谱模块（Kuzu + numpy）
 │   │   ├── __init__.py        # 单例工厂函数
-│   │   ├── graph_store.py     # NetworkX 图存储 + JSON 持久化
+│   │   ├── graph_store.py     # Kuzu 图数据库（原生持久化）
 │   │   ├── graph_builder.py   # LLM 实体关系抽取 + 图谱构建
-│   │   ├── graph_retriever.py # 实体链接 + 子图提取 + 路径推理
+│   │   ├── graph_retriever.py # 实体链接（numpy 语义搜索）+ 子图提取 + 路径推理
 │   │   └── kg_intent.py       # LLM 问题意图分析路由
 │   ├── backend/               # AI 后端客户端
 │   │   ├── llm.py             # ChatOpenAI 工厂（fast/strong/generic 三档）
@@ -333,8 +333,8 @@ agentic-rag/
 │   │   ├── loader.py          # 多格式加载器（PDF/MD/TXT）
 │   │   ├── chunker.py         # 文本分块
 │   │   └── indexer.py         # 文档索引器（含自动 KG 构建）
-│   ├── store/                 # 向量存储
-│   │   └── vector_store.py    # ChromaDB 封装
+│   ├── store/                 # 数据存储
+│   │   └── vector_store.py    # ChromaDB 封装（含文档元数据查询）
 │   ├── memory/                # 对话记忆
 │   │   └── manager.py         # 多会话隔离 + 滑动窗口
 │   └── services/              # 业务服务层
@@ -375,8 +375,11 @@ agentic-rag/
 │           ├── common/        # HealthBar
 │           ├── chat/          # ChatPanel, ChatInput, MessageBubble, SourcePanel, AgentPathBadge, SessionHistory
 │           └── documents/     # DocumentUpload, DocumentList
-├── chroma_data/               # ChromaDB 持久化数据（自动生成）
-└── kg_data/                   # 知识图谱 JSON 数据（自动生成）
+├── data/                      # 本地数据存储（自动生成）
+│   ├── chroma/                # ChromaDB 持久化数据
+│   ├── kg/                    # Kuzu 图数据库 + 实体向量索引 .npz
+│   └── temp_uploads/          # 大文件临时缓存
+└── chroma_data/               # （旧，已迁移到 data/chroma）
 ```
 
 ## 依赖
@@ -388,15 +391,15 @@ agentic-rag/
 | `fastapi` + `uvicorn` | Web 框架与服务器 |
 | `langgraph` | Agent 状态图编排 + Send fan-out/fan-in |
 | `langchain` + `langchain-openai` + `langchain-chroma` + `langchain-community` | RAG 组件链 |
-| `chromadb` | 向量数据库（本地持久化） |
-| `networkx` | 知识图谱存储与图算法 |
+| `chromadb` | 向量数据库（本地持久化，文档元数据一同存储） |
+| `kuzu` | 图数据库（知识图谱存储，原生持久化） |
+| `numpy` | 实体向量索引（.npz 二进制文件替代原 FAISS+SQLite） |
 | `dashscope` | 百炼 LLM / Embedding / Rerank SDK |
 | `langsmith` | LLM 追踪与评估 |
 | `ddgs` | DuckDuckGo 网页搜索（联网搜索降级） |
 | `pdfminer-six` + `python-docx` + `mistune` | 文档解析（PDF/DOCX/MD/TXT/CSV） |
 | `jieba` | 中文分词（BM25 检索） |
 | `rank-bm25` | BM25 关键词检索算法 |
-| `sentence-transformers` | 语义编码（辅助） |
 | `pydantic-settings` | 配置管理 |
 | `sse-starlette` | SSE 流式输出 |
 | `python-multipart` | 文件上传支持 |

@@ -1,6 +1,6 @@
 """GraphBuilder - LLM 驱动的实体关系抽取与知识图谱构建
 
-从文档分块中抽取实体和关系，构建 NetworkX 图。
+从文档分块中抽取实体和关系，写入 Kuzu 图数据库。
 批次间使用 ThreadPoolExecutor 并发执行 LLM 调用以提升速度。
 """
 
