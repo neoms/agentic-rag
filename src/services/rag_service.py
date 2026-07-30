@@ -23,10 +23,7 @@ from src.models.chat import (
     StreamEvent,
 )
 from src.memory.manager import memory_manager
-from src.backend.llm import create_strong_llm
 from src.services.generator import (
-    format_documents_with_citations,
-    build_generate_prompt,
     build_generate_node_data,
     build_hallucination_node_data,
 )
@@ -72,6 +69,9 @@ class RAGService:
             "enable_kg": request.enable_kg,  # 由意图分析自动决定是否实际启用
             "kg_intent": False,
             "kg_context": "",
+            "complexity": "SIMPLE",
+            "answer": "",
+            "citation_metadata": {},
         }
 
         # recursion_limit=50：KG 开启时 Send 分支 + 查询重写循环可能超过默认 25
@@ -80,10 +80,11 @@ class RAGService:
             "retrieve", "rerank_documents", "grade_documents",
             "web_search", "transform_query", "tools",
             "analyze_kg_intent", "parallel_retrieve_merge",
+            "judge_complexity", "generate_simple", "generate_complex",
         }
         # 线性节点后继（用于预测 node_start）
-        # analyze_kg_intent → parallel_retrieve_merge 在策略节点全部完成后由
-        # parallel_retrieve_merge_node 内部自行激活，不在此预测
+        # 绝大多数节点已通过条件边或节点内部自定义事件（node_start）自动激活，
+        # 此处仅保留合并节点的默认后继
         LINEAR_NEXT: dict[str, str] = {
             "parallel_retrieve_merge": "rerank_documents",
         }
@@ -104,12 +105,30 @@ class RAGService:
             if mode == "custom":
                 if isinstance(chunk, dict):
                     custom_event = chunk.get("event", "")
+
+                    # 流式 token（来自 generate_simple/complex 节点）
+                    if custom_event == "token":
+                        content = chunk.get("content", "")
+                        if content:
+                            yield StreamEvent(event="token", data=content)
+                        continue
+
+                    # 引文元数据（来自 generate_simple/complex 节点）
+                    if custom_event == "citations":
+                        data = chunk.get("data", {})
+                        if data:
+                            yield StreamEvent(
+                                event="citations",
+                                data=json.dumps(data, ensure_ascii=False),
+                            )
+                        continue
+
+                    # 节点生命周期事件（node_start / node_step）
                     node_name = chunk.get("node", "")
                     if custom_event and node_name:
                         logger.info(
                             "[stream_rag] 自定义事件: %s → %s", node_name, custom_event,
                         )
-                        # 记录节点耗时（策略子节点已只推送 node_step）
                         if custom_event == "node_start":
                             node_start_ts[node_name] = time.perf_counter() * 1000
                         elif custom_event == "node_step" and node_name in node_start_ts:
@@ -162,8 +181,7 @@ class RAGService:
 
         agent_path = result.get("agent_path", [])
         agent_path = [p for p in agent_path if "skipped" not in p]
-        # 补充外部生成路径标记（generate/check_hallucination 已从图中移除）
-        agent_path.append("generate")
+        # check_hallucination 仍在图外，由 rag_service 补充
         if request.enable_reflection:
             agent_path.append("check_hallucination")
 
@@ -190,54 +208,35 @@ class RAGService:
             data=json.dumps(agent_path, ensure_ascii=False),
         )
 
-        # 图执行完成，开始外部流式生成
-        node_start_ts["generate"] = time.perf_counter() * 1000
-        yield StreamEvent(event="node_start", data="generate")
+        # 从 state 读取图内生成结果（generate_simple/complex 已产出 answer）
+        answer = result.get("answer", "")
+        has_docs = bool(documents)
 
-        if documents:
-            # 1. 构建带引文的文档上下文
-            docs_text, citation_metadata = format_documents_with_citations(documents)
+        # 确定实际执行的生成节点 ID
+        generate_node_id = "generate_simple"
+        for p in agent_path:
+            if p.startswith("generate_"):
+                generate_node_id = p
+                break
 
-            # 2. 发送引文元数据
-            if citation_metadata:
-                yield StreamEvent(
-                    event="citations",
-                    data=json.dumps(citation_metadata, ensure_ascii=False),
-                )
-
-            # 3. 构建 prompt 并流式生成
-            chat_history = memory_manager.get_chat_history_string(request.session_id)
-            prompt = build_generate_prompt(request.query, docs_text, chat_history)
-            llm = create_strong_llm(streaming=True)
-
-            full_answer = ""
-            async for chunk in llm.astream(prompt):
-                if chunk.content:
-                    full_answer += chunk.content
-                    yield StreamEvent(event="token", data=chunk.content)
-
-            # 标记 generate 已完成（让流程图在幻觉检测前就显示生成完成）
-            if "generate" in node_start_ts:
-                node_timings["generate"] = round(
-                    time.perf_counter() * 1000 - node_start_ts.pop("generate"), 1
-                )
-            yield StreamEvent(event="node_step", data="generate")
-
-            # 4. 填充 generate 节点 I/O 数据（含耗时）
-            node_data["generate"] = build_generate_node_data(
-                request.query, documents, full_answer,
+        if has_docs:
+            # 填充图内生成节点的 I/O 数据
+            node_data[generate_node_id] = build_generate_node_data(
+                request.query, documents, answer,
             )
-            if "generate" in node_timings:
-                node_data["generate"]["durationMs"] = node_timings["generate"]
+            # 注入生成节点耗时（node_timings 在 astream 循环中已记录，但
+            # generate node_data 此时才创建，错过第 171 行的 merge 循环）
+            if generate_node_id in node_timings:
+                node_data[generate_node_id]["durationMs"] = node_timings[generate_node_id]
 
-            # 5. 幻觉检测（自反思开启时）
+            # 幻觉检测（自反思开启时）
             hallucination_passed = True
             hallucination_faithfulness = 100.0
             if request.enable_reflection:
                 node_start_ts["check_hallucination"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="check_hallucination")
                 hallucination_passed, hallucination_faithfulness = (
-                    await check_hallucination_async(documents, full_answer)
+                    await check_hallucination_async(documents, answer)
                 )
                 if "check_hallucination" in node_start_ts:
                     node_timings["check_hallucination"] = round(
@@ -253,22 +252,25 @@ class RAGService:
                     }, ensure_ascii=False),
                 )
                 node_data["check_hallucination"] = build_hallucination_node_data(
-                    full_answer, hallucination_faithfulness, hallucination_passed,
+                    answer, hallucination_faithfulness, hallucination_passed,
                 )
                 if "check_hallucination" in node_timings:
                     node_data["check_hallucination"]["durationMs"] = node_timings["check_hallucination"]
 
-            # 6. 记录对话
-            memory_manager.add_interaction(request.session_id, request.query, full_answer)
-            logger.info("[stream_rag] 流式生成完成: answer_len=%d", len(full_answer))
+            # 记录对话
+            memory_manager.add_interaction(request.session_id, request.query, answer)
+            logger.info("[stream_rag] 流式生成完成: answer_len=%d, node=%s",
+                         len(answer), generate_node_id)
         else:
-            msg = "未找到相关文档。"
-            yield StreamEvent(event="token", data=msg)
-            memory_manager.add_interaction(request.session_id, request.query, msg)
+            # 图内生成未产出答案 → 降级兜底
+            if not answer:
+                answer = "未找到相关文档。"
+                yield StreamEvent(event="token", data=answer)
+            node_data[generate_node_id] = build_generate_node_data(request.query, [], answer)
+            if generate_node_id in node_timings:
+                node_data[generate_node_id]["durationMs"] = node_timings[generate_node_id]
+            memory_manager.add_interaction(request.session_id, request.query, answer)
             logger.info("[stream_rag] 无文档，返回兜底回答")
-            node_data["generate"] = build_generate_node_data(request.query, [], msg)
-            if "generate" in node_timings:
-                node_data["generate"]["durationMs"] = node_timings["generate"]
 
         # 发送节点 I/O 数据（前端流程图点击展示）
         yield StreamEvent(
@@ -469,6 +471,27 @@ class RAGService:
                     ),
                 },
             }
+
+        # ── 复杂度判定 ──
+        complexity = result.get("complexity", "SIMPLE")
+        data["judge_complexity"] = {
+            "input": {
+                "query": query,
+                "documents_count": len(docs),
+                "doc_previews": [
+                    d.page_content[:200] for d in docs[:3]
+                ],
+            },
+            "output": {
+                "complexity": complexity,
+                "verdict": "SIMPLE" if complexity == "SIMPLE" else "COMPLEX",
+                "action": (
+                    "问题较简单，使用 qwen-turbo 快速生成"
+                    if complexity == "SIMPLE"
+                    else "问题需多步推理，使用 qwen-max 高质量生成"
+                ),
+            },
+        }
 
         return data
 

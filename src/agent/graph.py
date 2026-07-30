@@ -4,15 +4,20 @@
     START → analyze_kg_intent → parallel_retrieve_merge → rerank_documents
                                                            ↓
                                                      grade_documents
-                                                     ├── [RELEVANT] → 图结束 → 外部生成
+                                                     ├── [RELEVANT] → judge_complexity (qwen-turbo)
+                                                     │                  ├── SIMPLE → generate_simple (qwen-turbo)
+                                                     │                  └── COMPLEX → generate_complex (qwen-max)
+                                                     │                               ↓
+                                                     │                         check_hallucination (图外)
                                                      └── [IRRELEVANT] →
-                                                         ├── enable_web_search → web_search → 图结束
+                                                         ├── enable_web_search → web_search → judge_complexity
                                                          └── !enable_web_search → transform_query → retrieve (循环)
 
 parallel_retrieve_merge 内部合并了所有并行策略（BM25/Multi-Query/KG），
 消除了旧架构中 LangGraph Send fan-in 导致 merge 被多次调用的状态覆盖 bug。
 
-generate / check_hallucination 由外部 rag_service 完成流式生成。
+judge_complexity + generate_simple/complex 已迁移到图内。
+check_hallucination 仍在图外由 rag_service 完成。
 """
 
 import logging
@@ -30,19 +35,23 @@ from src.agent.nodes import (
     web_search_node,
     analyze_kg_intent_node,
     parallel_retrieve_merge_node,
+    judge_complexity_node,
+    generate_simple_node,
+    generate_complex_node,
+    route_after_judge,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_query", "web_search"]:
+def should_continue_after_grade(state: AgentState) -> Literal["judge_complexity", "transform_query", "web_search"]:
     """文档评估后的条件路由
 
-    - 文档相关 → 图结束（由外部 rag_service 负责生成）
-    - 文档不相关 + 文档为空（向量库无匹配）→ 跳过查询重写，走 web_search 或降级结束
+    - 文档相关 → judge_complexity（统一走图内复杂度判定）
+    - 文档不相关 + 文档为空（向量库无匹配）→ 跳过查询重写，走 web_search 或降级 judge
     - 文档不相关 + 开启联网搜索 → 联网搜索（降级方案）
     - 文档不相关 + 开启查询重写 + 未超过重试次数 → 查询重写
-    - 其他情况 → 图结束（降级处理）
+    - 其他情况 → judge_complexity（降级处理）
     """
     enable_web = state.get("enable_web_search", False)
     enable_transform = state.get("enable_transform_query", True)
@@ -51,15 +60,15 @@ def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_
                 state.get("documents_relevant", False), len(documents), enable_web, enable_transform)
 
     if state.get("documents_relevant", False):
-        logger.info("路由: 文档相关 → end (外部生成)")
-        return "end"
+        logger.info("路由: 文档相关 → judge_complexity")
+        return "judge_complexity"
 
     if not documents:
         if enable_web:
             logger.info("路由: 文档为空 + 联网搜索已开启 → web_search")
             return "web_search"
-        logger.info("路由: 文档为空 → end (降级)")
-        return "end"
+        logger.info("路由: 文档为空 → judge_complexity (降级)")
+        return "judge_complexity"
 
     if enable_web:
         logger.info("路由: 文档不相关 + 联网搜索已开启 → web_search")
@@ -72,36 +81,36 @@ def should_continue_after_grade(state: AgentState) -> Literal["end", "transform_
         logger.info("路由: 文档不相关 → transform_query (第 %d/%d 次)", iteration + 1, max_iter)
         return "transform_query"
 
-    logger.info("路由: transform_query 已关闭或超过重试次数 → end (降级)")
-    return "end"
+    logger.info("路由: transform_query 已关闭或超过重试次数 → judge_complexity (降级)")
+    return "judge_complexity"
 
 
 def route_after_merge(
     state: AgentState,
-) -> Literal["rerank_documents", "grade_documents", "end"]:
+) -> Literal["rerank_documents", "grade_documents", "judge_complexity"]:
     """并行检索合并后的条件路由
 
     - rerank 开启 → 正常走重排序
     - rerank 关闭 + grade 开启 → 跳过 rerank 直接评估
-    - 两者都关 → 图结束（外部生成）
+    - 两者都关 → 跳过所有，直接去 judge_complexity
     """
     if state.get("enable_rerank", True):
         return "rerank_documents"
     if state.get("enable_grade_documents", True):
         logger.info("路由: rerank 已关闭 → 跳过 rerank，直接 grade")
         return "grade_documents"
-    logger.info("路由: rerank+grade 均关闭 → end")
-    return "end"
+    logger.info("路由: rerank+grade 均关闭 → judge_complexity")
+    return "judge_complexity"
 
 
 def route_after_rerank(
     state: AgentState,
-) -> Literal["grade_documents", "end"]:
+) -> Literal["grade_documents", "judge_complexity"]:
     """rerank 后的条件路由：是否进行文档评估"""
     if state.get("enable_grade_documents", True):
         return "grade_documents"
-    logger.info("路由: grade 已关闭 → end (外部生成)")
-    return "end"
+    logger.info("路由: grade 已关闭 → judge_complexity")
+    return "judge_complexity"
 
 
 def build_agent_graph() -> StateGraph:
@@ -114,11 +123,15 @@ def build_agent_graph() -> StateGraph:
         grade_documents        - 文档相关性评估
         web_search              - 联网搜索降级
         transform_query        - 查询重写优化
+        judge_complexity       - 复杂度判定（qwen-turbo）
+        generate_simple        - 简单生成（qwen-turbo 流式）
+        generate_complex       - 复杂生成（qwen-max 流式）
 
     并行策略（BM25/Multi-Query/KG）全部在 parallel_retrieve_merge 内部
     使用 ThreadPoolExecutor 并行执行，merge 只调用一次，消除状态覆盖 bug。
 
-    generate / check_hallucination 由外部 rag_service 处理。
+    judge_complexity / generate_simple / generate_complex 为图内节点。
+    check_hallucination 仍由外部 rag_service 处理。
     """
     workflow = StateGraph(AgentState)
 
@@ -130,19 +143,22 @@ def build_agent_graph() -> StateGraph:
     workflow.add_node("grade_documents", grade_documents)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("transform_query", transform_query)
+    workflow.add_node("judge_complexity", judge_complexity_node)
+    workflow.add_node("generate_simple", generate_simple_node)
+    workflow.add_node("generate_complex", generate_complex_node)
 
     # ── 入口 → 意图分析 → 并行检索 + 合并 ──
     workflow.set_entry_point("analyze_kg_intent")
     workflow.add_edge("analyze_kg_intent", "parallel_retrieve_merge")
 
-    # ── 并行检索 → rerank / grade / end（条件跳过 rerank） ──
+    # ── 并行检索 → rerank / grade / judge（条件跳过 rerank） ──
     workflow.add_conditional_edges(
         "parallel_retrieve_merge",
         route_after_merge,
         {
             "rerank_documents": "rerank_documents",
             "grade_documents": "grade_documents",
-            "end": END,
+            "judge_complexity": "judge_complexity",
         },
     )
 
@@ -150,35 +166,49 @@ def build_agent_graph() -> StateGraph:
     workflow.add_edge("transform_query", "retrieve")
     workflow.add_edge("retrieve", "rerank_documents")
 
-    # ── rerank → grade / end ──
+    # ── rerank → grade / judge ──
     workflow.add_conditional_edges(
         "rerank_documents",
         route_after_rerank,
         {
             "grade_documents": "grade_documents",
-            "end": END,
+            "judge_complexity": "judge_complexity",
         },
     )
 
-    # ── grade → end / web_search / transform_query ──
+    # ── grade → judge / web_search / transform_query ──
     workflow.add_conditional_edges(
         "grade_documents",
         should_continue_after_grade,
         {
-            "end": END,
+            "judge_complexity": "judge_complexity",
             "web_search": "web_search",
             "transform_query": "transform_query",
         },
     )
 
-    # ── web_search → END（外部生成） ──
-    workflow.add_edge("web_search", END)
+    # ── web_search → judge_complexity ──
+    workflow.add_edge("web_search", "judge_complexity")
+
+    # ── judge_complexity → generate_simple / generate_complex（条件路由） ──
+    workflow.add_conditional_edges(
+        "judge_complexity",
+        route_after_judge,
+        {
+            "generate_simple": "generate_simple",
+            "generate_complex": "generate_complex",
+        },
+    )
+
+    # ── 生成节点 → END ──
+    workflow.add_edge("generate_simple", END)
+    workflow.add_edge("generate_complex", END)
 
     # 编译图（带内存检查点，支持状态持久化）
     checkpointer = MemorySaver()
     compiled_graph = workflow.compile(checkpointer=checkpointer)
 
-    logger.info("Agent 状态图构建完成")
+    logger.info("Agent 状态图构建完成（含复杂度判定+双生成节点）")
     return compiled_graph
 
 

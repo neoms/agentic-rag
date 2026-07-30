@@ -368,9 +368,11 @@ export function useChat() {
               break
             case 'done':
               messages.value[msgIndex].isStreaming = false
-              // 将手动激活的 generate 补回已完成列表（始终执行）
-              if (!flow.completedNodes.value.includes('generate')) {
-                flow.completedNodes.value = [...flow.completedNodes.value, 'generate']
+              // generate_simple/complex 是图内节点，node_step 已由 updates 模式在
+              // astream 循环中发出。仅当意外缺失时，根据 agent_path 补全实际执行的节点
+              const genNode = streamAgentPath.value.find(p => p.startsWith('generate_'))
+              if (genNode && !flow.completedNodes.value.includes(genNode)) {
+                flow.completedNodes.value = [...flow.completedNodes.value, genNode]
               }
               // check_hallucination 仅在自反思开启且实际运行时补回
               if (enableReflection.value && !flow.completedNodes.value.includes('check_hallucination')) {

@@ -8,7 +8,7 @@
 """
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
@@ -21,15 +21,19 @@ from src.agent.prompts import (
     REWRITE_QUERY_SYSTEM,
     REWRITE_QUERY_USER,
     MULTI_QUERY_GENERATE_USER,
+    JUDGE_COMPLEXITY_SYSTEM,
+    JUDGE_COMPLEXITY_USER,
 )
 from src.agent.tools import ALL_TOOLS, _duckduckgo_search
-from src.backend.llm import create_llm_client, create_fast_llm
+from src.backend.llm import create_llm_client, create_fast_llm, create_strong_llm
 from src.backend.embedding import get_embedding_client
 from src.backend.reranker import rerank_documents
 from src.store.vector_store import vector_store
 from src.retrieval.bm25 import bm25_retriever
 from src.config.settings import settings
 from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
+from src.services.generator import format_documents_with_citations, build_generate_prompt
+from src.memory.manager import memory_manager
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -514,3 +518,148 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
     except Exception as e:
         logger.warning("KG 意图分析: Stage 2 异常，默认降级: %s", e)
         return {"kg_intent": False, "agent_path": ["analyze_kg_intent (error)"]}
+
+
+# ==================== 复杂度判定节点 ====================
+
+
+def judge_complexity_node(state: AgentState) -> dict[str, Any]:
+    """复杂度判定节点：使用 qwen-turbo 极简判定问题复杂度
+
+    输入：query + 最多 3 篇文档首段前 200 字符预览
+    输出：SIMPLE / COMPLEX（单个词，无额外内容）
+    目标 Token 消耗：~250-350 tokens
+    """
+    from langgraph.config import get_stream_writer
+    writer = get_stream_writer()
+    writer({"event": "node_start", "node": "judge_complexity"})
+
+    query = state["query"]
+    documents = state.get("documents", [])
+
+    # 极简文档摘要（最多 3 篇，每篇前 200 字符，去换行）
+    doc_previews = []
+    for doc in documents[:3]:
+        preview = doc.page_content[:200].replace("\n", " ").replace("\r", "")
+        doc_previews.append(f"[{len(doc_previews) + 1}] {preview}")
+    previews_text = "\n".join(doc_previews) if doc_previews else "(无文档)"
+
+    llm = create_fast_llm()  # qwen-turbo
+    messages = [
+        HumanMessage(content=JUDGE_COMPLEXITY_SYSTEM),
+        HumanMessage(
+            content=JUDGE_COMPLEXITY_USER.format(
+                query=query,
+                doc_count=len(documents),
+                doc_previews=previews_text,
+            )
+        ),
+    ]
+    response = llm.invoke(messages)
+    raw = response.content.strip().upper()
+    complexity = "COMPLEX" if "COMPLEX" in raw else "SIMPLE"
+
+    logger.info("复杂度判定: %s (raw='%s', docs=%d)", complexity, raw, len(documents))
+
+    return {
+        "complexity": complexity,
+        "agent_path": ["judge_complexity"],
+    }
+
+
+# ==================== 路由函数（判定后） ====================
+
+
+def route_after_judge(state: AgentState) -> Literal["generate_simple", "generate_complex"]:
+    """复杂度判定后的条件路由
+
+    - SIMPLE → generate_simple（qwen-turbo 快速生成）
+    - COMPLEX → generate_complex（qwen-max 高质量生成）
+    """
+    complexity = state.get("complexity", "SIMPLE")
+    if complexity == "COMPLEX":
+        logger.info("路由: 复杂度 COMPLEX → generate_complex")
+        return "generate_complex"
+    logger.info("路由: 复杂度 SIMPLE → generate_simple")
+    return "generate_simple"
+
+
+# ==================== 生成节点（简单 / 复杂） ====================
+
+
+def generate_simple_node(state: AgentState) -> dict[str, Any]:
+    """简单生成节点：使用 qwen-turbo 流式生成"""
+    return _generate_node(state, is_simple=True)
+
+
+def generate_complex_node(state: AgentState) -> dict[str, Any]:
+    """复杂生成节点：使用 qwen-max 流式生成"""
+    return _generate_node(state, is_simple=False)
+
+
+def _generate_node(state: AgentState, is_simple: bool) -> dict[str, Any]:
+    """内部生成逻辑（简单/复杂共用）
+
+    通过 get_stream_writer 实时推送 token 和 citation 事件，
+    rag_service 在 astream custom 循环中转发为 SSE。
+    """
+    from langgraph.config import get_stream_writer
+    writer = get_stream_writer()
+
+    node_id = "generate_simple" if is_simple else "generate_complex"
+    # 立即推送 node_start，让前端流程图实时点亮生成节点
+    writer({"event": "node_start", "node": node_id})
+
+    query = state["query"]
+    documents = state.get("documents", [])
+    session_id = state.get("session_id", "")
+
+    # 1. 带引文的文档格式化
+    docs_text, citation_metadata = format_documents_with_citations(documents)
+
+    # 2. 推送引文元数据（仅需一次）
+    if citation_metadata:
+        writer({
+            "event": "citations",
+            "data": citation_metadata,
+        })
+
+    # 3. 获取对话历史
+    chat_history = ""
+    if session_id:
+        try:
+            chat_history = memory_manager.get_chat_history_string(session_id)
+        except Exception:
+            chat_history = ""
+
+    # 4. 构建 prompt
+    prompt = build_generate_prompt(query, docs_text, chat_history)
+
+    # 5. 创建 LLM（qwen-turbo 或 qwen-max）
+    if is_simple:
+        llm = create_fast_llm(streaming=True)
+    else:
+        llm = create_strong_llm(streaming=True)
+
+    # 6. 流式生成 & 实时推送 token
+    full_answer = ""
+    for chunk in llm.stream(prompt):
+        if chunk.content:
+            full_answer += chunk.content
+            writer({
+                "event": "token",
+                "content": chunk.content,
+            })
+
+    logger.info(
+        "生成完成: model=%s, answer_len=%d, citations=%d",
+        "qwen-turbo" if is_simple else "qwen-max",
+        len(full_answer),
+        len(citation_metadata),
+    )
+
+    return {
+        "answer": full_answer,
+        "citation_metadata": citation_metadata,
+        "agent_path": ["generate_simple" if is_simple else "generate_complex"],
+    }

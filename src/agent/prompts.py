@@ -109,6 +109,22 @@ CHECK_HALLUCINATION_USER = """文档上下文：
 
 请验证答案是否与文档上下文一致。"""
 
+# ==================== 复杂度判定（极致精简） ====================
+
+JUDGE_COMPLEXITY_SYSTEM = """You are a query complexity classifier. Determine if the question is SIMPLE or COMPLEX.
+
+SIMPLE = factual lookup, short definition, straightforward Q&A needing 1-2 sentences.
+COMPLEX = multi-step reasoning, comparison, analysis, synthesis, or needing detailed explanation with citations.
+
+Output exactly one word: SIMPLE or COMPLEX."""
+
+JUDGE_COMPLEXITY_USER = """Query: {query}
+Total documents: {doc_count}
+Previews:
+{doc_previews}
+
+Complexity:"""
+
 # ==================== Multi-Query 多角度查询 ====================
 
 MULTI_QUERY_GENERATE_USER = """你是一个查询优化专家。请将以下用户问题改写为 {num_variations} 个不同角度的查询变体，每个变体聚焦于问题的不同方面或使用不同的表述方式。

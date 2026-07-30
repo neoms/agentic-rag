@@ -17,10 +17,13 @@ const navItems = [
 //              ↓ (总线)
 //       → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
 //              ↓ (全部收敛到合并)
-//       → merge → rerank → grade → [相关] → generate → [反思] → check → END
+//       → merge → rerank → grade → [相关] → judge_complexity (qwen-turbo)
 //                                  → [不相关] → transform_query ─ retry → retrieve
-//                                            → web_search ──────────── → generate
-//   check_hallucination → [FAILED + retries<max] → generate (retry loop)
+//                                            → web_search ──────────── → judge
+//       judge_complexity → [SIMPLE] → generate_simple (qwen-turbo)
+//                        → [COMPLEX] → generate_complex (qwen-max)
+//       generate_simple/complex → [反思] → check_hallucination → END
+//   check_hallucination → [FAILED + retries<max] → judge (retry loop)
 //   viewBox 0 0 380 480
 type NodeState = 'active' | 'done' | 'disabled' | 'skipped' | 'pending'
 interface N { id: string; label: string; x: number; y: number; w: number; h: number }
@@ -37,12 +40,14 @@ const NODES: N[] = [
   // 可选节点（主链，可被 bypass）
   { id: 'rerank_documents',     label: '重排序',     x: 150, y: 166,w: 60, h: 22 },
   { id: 'grade_documents',      label: '文档评估',   x: 150, y: 206,w: 60, h: 22 },
-  // 分支节点
+  // 分支节点（同排：左-查询重写，中-复杂度判定，右-联网搜索）
   { id: 'transform_query',      label: '查询重写',   x: 8,   y: 248,w: 60, h: 22 },
+  { id: 'judge_complexity',     label: '复杂度判定', x: 150, y: 248,w: 60, h: 22 },
   { id: 'web_search',           label: '联网搜索',   x: 252, y: 248,w: 60, h: 22 },
-  // 固定节点
-  { id: 'generate',             label: '生成回答',   x: 150, y: 282,w: 60, h: 22 },
-  { id: 'check_hallucination',  label: '幻觉检测',   x: 150, y: 334,w: 60, h: 22 },
+  // 并联生成节点
+  { id: 'generate_simple',      label: '简单生成',   x: 70,  y: 294,w: 60, h: 22 },
+  { id: 'generate_complex',     label: '复杂生成',   x: 212, y: 294,w: 60, h: 22 },
+  { id: 'check_hallucination',  label: '幻觉检测',   x: 150, y: 350,w: 60, h: 22 },
 ]
 const byId = (id: string): N => NODES.find(n => n.id === id)!
 
@@ -303,7 +308,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           <line x1="258" y1="100" x2="195" y2="126" marker-end="url(#arr)"/>
         </g>
 
-        <!-- ═══ 主链箭头 merge → rerank → grade → generate → check → END ═══ -->
+        <!-- ═══ 主链箭头 merge → rerank → grade → judge → [simple|complex] → check → END ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- merge → rerank -->
           <line x1="180" :y1="byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h"
@@ -313,13 +318,20 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           <line x1="180" :y1="byId('rerank_documents').y + byId('rerank_documents').h"
                 x2="180" :y2="byId('grade_documents').y"
             marker-end="url(#arr)" :opacity="mainEdgeOpacity('rerank_to_grade')"/>
-          <!-- grade → generate（相关） -->
+          <!-- grade → judge_complexity（相关） -->
           <line x1="180" :y1="byId('grade_documents').y + byId('grade_documents').h"
-                x2="180" :y2="byId('generate').y"
+                x2="180" :y2="byId('judge_complexity').y"
             marker-end="url(#arr)" :opacity="mainEdgeOpacity('grade_to_gen')"/>
-          <!-- generate → check -->
-          <line x1="180" :y1="byId('generate').y + byId('generate').h"
-                x2="180" :y2="byId('check_hallucination').y" marker-end="url(#arr)"/>
+          <!-- judge → generate_simple（SIMPLE 分支左） -->
+          <path d="M 180 270 L 100 294" marker-end="url(#arr)" />
+          <!-- judge → generate_complex（COMPLEX 分支右） -->
+          <path d="M 180 270 L 242 294" marker-end="url(#arr)" />
+          <!-- generate_simple → check（左汇聚） -->
+          <path d="M 130 305 L 180 305" />
+          <!-- generate_complex → check（右汇聚） -->
+          <path d="M 272 305 L 180 305" />
+          <!-- 汇聚 → check_hallucination -->
+          <line x1="180" y1="305" x2="180" :y2="byId('check_hallucination').y" marker-end="url(#arr)"/>
         </g>
 
         <!-- ═══ Bypass 绕过线（右侧虚线弧线） ═══ -->
@@ -327,23 +339,23 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 230 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 230 ${byId('grade_documents').y + byId('grade_documents').h/2}, 210 ${byId('grade_documents').y + byId('grade_documents').h/2}`"
           fill="none" :stroke="bypassColor('rerank')" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bypassOpacity('rerank')" marker-end="url(#arrAmber)"/>
-        <!-- case 3: rerank → 绕过 grade → generate -->
-        <path :d="`M 210 ${byId('rerank_documents').y + byId('rerank_documents').h/2} C 230 ${byId('rerank_documents').y + byId('rerank_documents').h/2}, 230 ${byId('generate').y + byId('generate').h/2}, 210 ${byId('generate').y + byId('generate').h/2}`"
+        <!-- case 3: rerank → 绕过 grade → judge_complexity -->
+        <path :d="`M 210 ${byId('rerank_documents').y + byId('rerank_documents').h/2} C 230 ${byId('rerank_documents').y + byId('rerank_documents').h/2}, 230 ${byId('judge_complexity').y + byId('judge_complexity').h/2}, 210 ${byId('judge_complexity').y + byId('judge_complexity').h/2}`"
           fill="none" :stroke="bypassColor('grade')" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bypassOpacity('grade')" marker-end="url(#arrAmber)"/>
-        <!-- case 2: merge → 绕过 rerank 和 grade → generate -->
-        <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 240 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 240 ${byId('generate').y + byId('generate').h/2}, 210 ${byId('generate').y + byId('generate').h/2}`"
+        <!-- case 2: merge → 绕过 rerank 和 grade → judge_complexity -->
+        <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 240 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 240 ${byId('judge_complexity').y + byId('judge_complexity').h/2}, 210 ${byId('judge_complexity').y + byId('judge_complexity').h/2}`"
           fill="none" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bothOff() ? 0.55 : 0.04" marker-end="url(#arrAmber)"/>
-        <!-- generate → 绕过 check → END -->
-        <path :d="`M 210 ${byId('generate').y + byId('generate').h/2} C 230 ${byId('generate').y + byId('generate').h/2}, 230 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}, 210 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}`"
+        <!-- generate_simple/complex → 绕过 check → END -->
+        <path :d="`M 210 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30} C 230 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30}, 230 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}, 210 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}`"
           fill="none" :stroke="reflectionBypassColor()" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="reflectionBypassOpacity()" marker-end="url(#arrAmber)"/>
 
         <!-- ═══ Bypass 标签 ═══ -->
         <text x="215" :y="byId('rerank_documents').y + byId('rerank_documents').h/2 - 5" :opacity="bypassOpacity('rerank')" :fill="bypassColor('rerank')" class="text-[9px]">绕过</text>
         <text x="215" :y="byId('grade_documents').y + byId('grade_documents').h + 14" :opacity="bypassOpacity('grade')" :fill="bypassColor('grade')" class="text-[9px]">绕过</text>
-        <text x="225" :y="(byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2 + byId('generate').y + byId('generate').h/2) / 2 - 2" :opacity="bothOff() ? 0.6 : 0.04" fill="#f59e0b" class="text-[9px]">均关</text>
+        <text x="225" :y="(byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2 + byId('judge_complexity').y + byId('judge_complexity').h/2) / 2 - 2" :opacity="bothOff() ? 0.6 : 0.04" fill="#f59e0b" class="text-[9px]">均关</text>
         <text x="215" :y="byId('check_hallucination').y + byId('check_hallucination').h + 26" :opacity="reflectionBypassOpacity()" :fill="reflectionBypassColor()" class="text-[9px]">绕过</text>
 
         <!-- ═══ 分支：grade → web_search / transform_query ═══ -->
@@ -356,27 +368,30 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
             marker-end="url(#arr)"/>
         </g>
 
-        <!-- ═══ web_search → generate ═══ -->
+        <!-- ═══ web_search → judge_complexity ═══ -->
         <line :x1="byId('web_search').x + byId('web_search').w/2"
               :y1="byId('web_search').y + byId('web_search').h"
               :x2="byId('web_search').x + byId('web_search').w/2"
               :y2="byId('web_search').y + byId('web_search').h + 7"
           stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
-        <path :d="`M ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y + byId('web_search').h + 7} C ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y + byId('web_search').h + 11}, ${byId('generate').x + byId('generate').w/2 + 30} ${byId('generate').y - 1}, ${byId('generate').x + byId('generate').w/2 + 30} ${byId('generate').y}`"
+        <path :d="`M ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y + byId('web_search').h + 7} C ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y + byId('web_search').h + 11}, ${byId('judge_complexity').x + byId('judge_complexity').w/2 + 30} ${byId('judge_complexity').y - 1}, ${byId('judge_complexity').x + byId('judge_complexity').w/2 + 30} ${byId('judge_complexity').y}`"
           stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
 
         <!-- ═══ 回环曲线 ═══ -->
         <!-- transform_query → retrieve（循环回检索） -->
         <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+22} C ${byId('transform_query').x} ${byId('transform_query').y+30}, -5 ${byId('transform_query').y+5}, -5 160 C -5 100, 38 100, 38 100`"
           fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arrAmber)"/>
-        <!-- check_hallucination → generate（幻觉重试） -->
-        <path :d="`M ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('check_hallucination').y + byId('check_hallucination').h + 3} C ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('check_hallucination').y + byId('check_hallucination').h + 3}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('generate').y + byId('generate').h/2}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('generate').y + byId('generate').h/2}`"
+        <!-- check_hallucination → judge_complexity（幻觉重试） -->
+        <path :d="`M ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('check_hallucination').y + byId('check_hallucination').h + 3} C ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('check_hallucination').y + byId('check_hallucination').h + 3}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('judge_complexity').y + byId('judge_complexity').h/2}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('judge_complexity').y + byId('judge_complexity').h/2}`"
           fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arrAmber)"/>
 
         <!-- ═══ 分支标签 ═══ -->
         <text x="186" :y="byId('grade_documents').y + byId('grade_documents').h + 34" class="text-[9px] fill-green-500/70">相关</text>
         <text x="226" :y="byId('grade_documents').y + byId('grade_documents').h + 20" class="text-[9px] fill-orange-400/70">不相关+联网</text>
         <text x="42"  :y="byId('grade_documents').y + byId('grade_documents').h + 20" class="text-[9px] fill-orange-400/70">不相关</text>
+        <!-- judge 分支标签 -->
+        <text x="118" :y="byId('judge_complexity').y + byId('judge_complexity').h + 14" class="text-[9px] fill-cyan-400/70">SIMPLE</text>
+        <text x="212" :y="byId('judge_complexity').y + byId('judge_complexity').h + 14" class="text-[9px] fill-amber-400/70">COMPLEX</text>
 
         <!-- ═══ 回环标签 ═══ -->
         <text x="22" y="210" class="text-[9px] fill-amber-500/80" transform="rotate(-90 22 210)">回检索</text>

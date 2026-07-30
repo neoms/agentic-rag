@@ -20,6 +20,9 @@ const nodeColors: Record<string, string> = {
   parallel_retrieve_merge: 'bg-sky-400/10 text-sky-400 border-sky-400/20',
   decide_strategy: 'bg-slate-400/10 text-slate-400 border-slate-400/20',
   analyze_kg_intent: 'bg-orange-400/10 text-orange-400 border-orange-400/20',
+  judge_complexity: 'bg-yellow-400/10 text-yellow-400 border-yellow-400/20',
+  generate_simple: 'bg-emerald-400/10 text-emerald-400 border-emerald-400/20',
+  generate_complex: 'bg-green-500/10 text-green-400 border-green-500/20',
 }
 
 const nodeLabels: Record<string, string> = {
@@ -36,6 +39,9 @@ const nodeLabels: Record<string, string> = {
   multi_query_retrieve: '多查询检索',
   decide_strategy: '策略决策',
   analyze_kg_intent: '图谱意图分析',
+  judge_complexity: '复杂度判定',
+  generate_simple: '简单生成',
+  generate_complex: '复杂生成',
 }
 
 const defaultColor = 'bg-slate-400/10 text-slate-400 border-slate-400/20'

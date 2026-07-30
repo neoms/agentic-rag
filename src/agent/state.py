@@ -75,3 +75,8 @@ class AgentState(TypedDict):
     enable_kg: bool                     # 是否启用知识图谱检索
     kg_intent: bool                    # 意图分析结果：是否需要 KG
     kg_context: str                    # KG 检索到的结构化上下文文本
+
+    # 复杂度判定 & 生成结果（judge_complexity / generate 节点使用）
+    complexity: str                    # "SIMPLE" 或 "COMPLEX"，由 judge_complexity 节点输出
+    answer: str                        # 最终生成的完整回答文本
+    citation_metadata: dict            # 引文标注元数据（供前端展示）
