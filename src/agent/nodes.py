@@ -571,43 +571,87 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
 # ==================== 复杂度判定节点 ====================
 
 
-def judge_complexity_node(state: AgentState) -> dict[str, Any]:
-    """复杂度判定节点：使用 qwen-turbo 极简判定问题复杂度
+def _quick_complexity(query: str) -> str | None:
+    """基于规则的快速复杂度判定（0ms，无需 LLM）
 
-    输入：query + 最多 3 篇文档首段前 200 字符预览
-    输出：SIMPLE / COMPLEX（单个词，无额外内容）
-    目标 Token 消耗：~250-350 tokens
+    Returns:
+        "SIMPLE" / "COMPLEX" / None（不确定，需 LLM 兜底）
+    """
+    q = query.strip()
+    q_lower = q.lower()
+
+    # ── 匹配检查（同时检测两种信号） ──
+    complex_signals = [
+        "为什么", "怎么", "如何", "怎样",
+        "对比", "比较", "区别", "差异", "vs",
+        "原因", "后果", "影响", "导致",
+        "是否应该", "应不应该", "是否可以",
+        "分析", "论证", "评价", "讨论",
+        "关系", "联系", "关联",
+        "利弊", "优劣", "优缺点",
+        "if", "whether", "should", "compare", "difference",
+    ]
+    simple_signals = [
+        "什么是", "是什么", "指的是",
+        "谁", "哪一年", "什么时候",
+        "在哪里", "多少",
+        "定义", "概念", "解释",
+        "列举", "列出", "有哪些",
+        "的别名", "的简称", "的全称",
+        "what is", "who is", "define", "list", "what are",
+    ]
+
+    has_complex = any(sig in q_lower for sig in complex_signals)
+    has_simple = any(sig in q_lower for sig in simple_signals)
+
+    # 同时匹配两种信号 → 复杂优先
+    if has_complex and has_simple:
+        return "COMPLEX"
+    if has_complex:
+        return "COMPLEX"
+    if has_simple:
+        return "SIMPLE"
+
+    # 无信号词 → 不确定，走 LLM 兜底
+    return None
+
+
+def judge_complexity_node(state: AgentState) -> dict[str, Any]:
+    """复杂度判定节点：先走规则快速路径，不确定时降级 qwen-turbo
+
+    规则路径：0ms，覆盖 ~60% 的常见 query 模式
+    LLM 路径：~200ms（去掉文档预览，仅 query+模型名）
     """
     from langgraph.config import get_stream_writer
     writer = get_stream_writer()
     writer({"event": "node_start", "node": "judge_complexity"})
 
     query = state["query"]
-    documents = state.get("documents", [])
 
-    # 极简文档摘要（最多 3 篇，每篇前 200 字符，去换行）
-    doc_previews = []
-    for doc in documents[:3]:
-        preview = doc.page_content[:200].replace("\n", " ").replace("\r", "")
-        doc_previews.append(f"[{len(doc_previews) + 1}] {preview}")
-    previews_text = "\n".join(doc_previews) if doc_previews else "(无文档)"
+    # ── 规则快速路径（0ms） ──
+    complexity = _quick_complexity(query)
+    if complexity:
+        logger.info("复杂度判定: 规则路径 → %s (query='%s')", complexity, query[:50])
+        return {
+            "complexity": complexity,
+            "agent_path": ["judge_complexity (rule)"],
+        }
 
-    llm = create_fast_llm()  # qwen-turbo
+    # ── LLM 兜底（去掉文档预览，复杂度只看 query 本身） ──
+    llm = create_fast_llm()
     messages = [
         HumanMessage(content=JUDGE_COMPLEXITY_SYSTEM),
-        HumanMessage(
-            content=JUDGE_COMPLEXITY_USER.format(
-                query=query,
-                doc_count=len(documents),
-                doc_previews=previews_text,
-            )
-        ),
+        HumanMessage(content=JUDGE_COMPLEXITY_USER.format(
+            query=query,
+            doc_count=len(state.get("documents", [])),
+            doc_previews="",
+        )),
     ]
     response = llm.invoke(messages)
     raw = response.content.strip().upper()
     complexity = "COMPLEX" if "COMPLEX" in raw else "SIMPLE"
 
-    logger.info("复杂度判定: %s (raw='%s', docs=%d)", complexity, raw, len(documents))
+    logger.info("复杂度判定: LLM 路径 → %s (raw='%s')", complexity, raw)
 
     return {
         "complexity": complexity,
