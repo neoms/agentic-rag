@@ -10,24 +10,21 @@ const props = defineProps<{
 // 活跃的引用弹出信息
 const activeCitationKey = ref<string | null>(null)
 
-// 解析消息内容，将 [DocX-ParaY] 替换为 HTML 标记
+// 解析消息内容，将 [N] 替换为可点击的 <sup> 标记
 const renderedContent = computed(() => {
   const content = props.message.content
   if (!content) return ''
 
-  // 替换 [DocX-ParaY] 或 [DocX-ParaY, DocX-ParaY] 格式的引用标记
-  // 匹配单个或多个引用： [Doc1-Para2] 或 [Doc1-Para2, Doc3-Para1]
+  // 匹配 [N] 或 [N, M] 格式的引用标记（N, M 为段落顺序号）
   return content.replace(
-    /\[((?:Doc\d+-Para\d+)(?:,\s*Doc\d+-Para\d+)*)\]/g,
-    (match, keyGroup: string) => {
-      const keys = keyGroup.split(',').map((k: string) => k.trim())
-      const badges = keys.map((key: string) => {
-        const info = props.message.citations?.[key]
-        if (!info) {
-          // 无元数据时只显示简短编号
-          return `<sup class="citation-marker" data-citation="${key}" title="${key}">[${key.replace('Doc', '').replace('-Para', '-')}]</sup>`
-        }
-        return `<sup class="citation-marker has-info" data-citation="${key}" title="来源: ${info.filename} · 段落 ${info.para_index}">[${info.doc_index}-${info.para_index}]</sup>`
+    /\[(\d+(?:\s*,\s*\d+)*)\]/g,
+    (match, numGroup: string) => {
+      const nums = numGroup.split(',').map((k: string) => k.trim())
+      const badges = nums.map((num: string) => {
+        const info = props.message.citations?.[num]
+        const filename = info?.filename ?? `来源 #${num}`
+        const cls = `citation-marker${info ? ' has-info' : ''}`
+        return `<sup class="${cls}" data-citation="${num}" title="${filename}">[${num}]</sup>`
       })
       return badges.join('')
     }

@@ -18,8 +18,8 @@ def format_documents_with_citations(
 ) -> tuple[str, dict[str, dict]]:
     """构建带段落索引的文档上下文 + 对应引文元数据
 
-    每篇文档按双换行拆分段落，为每段分配 [DocX-ParaY] 标识。
-    引文元数据在前端 SourcePanel 中用于高亮引用段落。
+    每篇文档按双换行拆分段落，为每段分配顺序号 [1] [2] [3] ...
+    引文元数据在前端点击标注时展示原文。
 
     Args:
         documents: 文档列表
@@ -30,6 +30,7 @@ def format_documents_with_citations(
     """
     doc_parts: list[str] = []
     citation_metadata: dict[str, dict] = {}
+    seq = 0  # 全局段落序号
 
     for doc_idx, doc in enumerate(documents[:max_docs], 1):
         src = doc.metadata.get("url") or doc.metadata.get("filename", "unknown")
@@ -43,9 +44,10 @@ def format_documents_with_citations(
 
         para_lines = []
         for para_idx, para in enumerate(paragraphs, 1):
-            citation_key = f"Doc{doc_idx}-Para{para_idx}"
-            para_lines.append(f"  [{citation_key}] {para}")
-            citation_metadata[citation_key] = {
+            seq += 1
+            key = str(seq)
+            para_lines.append(f"  [{key}] {para}")
+            citation_metadata[key] = {
                 "filename": src,
                 "source_type": source_type,
                 "url": url,
@@ -71,11 +73,11 @@ def build_generate_prompt(
 规则：
 1. 优先使用提供的文档信息回答；信息不足时明确说明
 2. 回答简洁准确有条理，使用中文
-3. 【重要】每句陈述性内容末尾都必须标注来源，格式为 [DocX-ParaY]
-   - 单源标注: "Python是动态类型语言 [Doc1-Para2]。"
-   - 多源标注: "机器学习分为三类 [Doc1-Para1, Doc2-Para3]。"
+3. 【重要】每句陈述性内容末尾都必须标注来源，格式为 [编号]
+   - 单源标注: "Python是动态类型语言 [1]。"
+   - 多源标注: "机器学习分为三类 [2, 3]。"
 4. 每句话至少有一个引用标注（总结句可多源标注），没有来源的陈述不要写
-5. 严格使用文档中提供的 [DocX-ParaY] 标识
+5. 严格使用文档中提供的 [编号] 标识
 
 文档上下文：
 {docs_text}
