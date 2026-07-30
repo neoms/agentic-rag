@@ -68,6 +68,7 @@ class RAGService:
             "documents_semantic": [],
             "documents_bm25": [],
             "documents_multi_query": [],
+            "strategy_timings_ms": {},
             "enable_kg": True,  # 由意图分析自动决定是否实际启用
             "kg_intent": False,
             "kg_context": "",
@@ -222,10 +223,12 @@ class RAGService:
                 )
             yield StreamEvent(event="node_step", data="generate")
 
-            # 4. 填充 generate 节点 I/O 数据
+            # 4. 填充 generate 节点 I/O 数据（含耗时）
             node_data["generate"] = build_generate_node_data(
                 request.query, documents, full_answer,
             )
+            if "generate" in node_timings:
+                node_data["generate"]["durationMs"] = node_timings["generate"]
 
             # 5. 幻觉检测（自反思开启时）
             hallucination_passed = True
@@ -252,6 +255,8 @@ class RAGService:
                 node_data["check_hallucination"] = build_hallucination_node_data(
                     full_answer, hallucination_faithfulness, hallucination_passed,
                 )
+                if "check_hallucination" in node_timings:
+                    node_data["check_hallucination"]["durationMs"] = node_timings["check_hallucination"]
 
             # 6. 记录对话
             memory_manager.add_interaction(request.session_id, request.query, full_answer)
@@ -262,6 +267,8 @@ class RAGService:
             memory_manager.add_interaction(request.session_id, request.query, msg)
             logger.info("[stream_rag] 无文档，返回兜底回答")
             node_data["generate"] = build_generate_node_data(request.query, [], msg)
+            if "generate" in node_timings:
+                node_data["generate"]["durationMs"] = node_timings["generate"]
 
         # 发送节点 I/O 数据（前端流程图点击展示）
         yield StreamEvent(

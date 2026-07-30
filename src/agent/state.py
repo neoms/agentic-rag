@@ -68,6 +68,9 @@ class AgentState(TypedDict):
     documents_bm25: list[Document]
     documents_multi_query: list[Document]
 
+    # 各策略耗时（毫秒），由 parallel_retrieve_merge_node 返回
+    strategy_timings_ms: dict[str, float]
+
     # 知识图谱检索（由意图分析自动决定是否启用）
     enable_kg: bool                     # 是否启用知识图谱检索
     kg_intent: bool                    # 意图分析结果：是否需要 KG
