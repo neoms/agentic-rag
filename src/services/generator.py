@@ -94,15 +94,23 @@ def build_generate_node_data(
     answer: str,
     max_docs: int = 8,
 ) -> dict:
-    """构建 generate 节点的 I/O 数据（前端流程图展示用）"""
-    gen_input: list[str] = [f"问题: {query}"]
+    """构建 generate 节点的 I/O 数据（前端流程图展示用，含完整上下文）"""
+    gen_docs = []
     for i, doc in enumerate(documents[:max_docs]):
         src = doc.metadata.get("url") or doc.metadata.get("filename", f"文档{i+1}")
-        preview = doc.page_content[:100].replace("\n", " ")
-        gen_input.append(f"参考 {src}:\n{preview}...")
-    if len(documents) > max_docs:
-        gen_input.append(f"... 及其他 {len(documents) - max_docs} 条")
-    return {"input": gen_input, "output": answer}
+        gen_docs.append({
+            "source": src,
+            "content": doc.page_content,
+            "metadata": {k: str(v) for k, v in doc.metadata.items()},
+        })
+    return {
+        "input": {
+            "query": query,
+            "context_documents_count": len(documents),
+            "context_documents": gen_docs,
+        },
+        "output": answer,
+    }
 
 
 def build_hallucination_node_data(
@@ -110,15 +118,20 @@ def build_hallucination_node_data(
     faithfulness: float,
     passed: bool,
 ) -> dict:
-    """构建 check_hallucination 节点的 I/O 数据（前端流程图展示用）"""
+    """构建 check_hallucination 节点的 I/O 数据（前端流程图展示用，含完整答案）"""
     return {
-        "input": [
-            f"待检测答案 ({len(answer)} 字符):",
-            answer[:300] + ("..." if len(answer) > 300 else ""),
-        ],
-        "output": [
-            f"忠实度: {faithfulness}%",
-            f"判定: {'PASSED ✓' if passed else 'FAILED ✗'}",
-            f"结果: {'答案忠实于参考文档' if passed else '答案存在编造，需要重试'}",
-        ],
+        "input": {
+            "answer_length": len(answer),
+            "answer": answer,
+        },
+        "output": {
+            "faithfulness_score": faithfulness,
+            "passed": passed,
+            "verdict": "PASSED ✓" if passed else "FAILED ✗",
+            "result": (
+                "答案忠实于参考文档"
+                if passed
+                else "答案存在编造，需要重试"
+            ),
+        },
     }

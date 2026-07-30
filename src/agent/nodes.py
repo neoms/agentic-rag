@@ -379,6 +379,10 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
         "documents": merged,
         "agent_path": ["parallel_retrieve_merge"],
         "kg_context": kg_context,
+        # 保留各策略独立结果（供前端节点详情分别展示）
+        "documents_semantic": base,
+        "documents_bm25": parallel_docs.get("bm25", []),
+        "documents_multi_query": parallel_docs.get("multi", []),
     }
 
 

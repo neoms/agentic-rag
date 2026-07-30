@@ -64,6 +64,7 @@ class AgentState(TypedDict):
     enable_multi_query: bool
 
     # 各检索策略独立结果（并行写避免冲突）
+    documents_semantic: list[Document]
     documents_bm25: list[Document]
     documents_multi_query: list[Document]
 

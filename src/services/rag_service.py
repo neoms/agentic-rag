@@ -9,7 +9,7 @@ import time
 import asyncio
 import logging
 import json
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from langchain_core.messages import HumanMessage
 
@@ -65,6 +65,7 @@ class RAGService:
             "enable_transform_query": request.enable_transform_query,
             "enable_bm25": request.enable_bm25,
             "enable_multi_query": request.enable_multi_query,
+            "documents_semantic": [],
             "documents_bm25": [],
             "documents_multi_query": [],
             "enable_kg": True,  # 由意图分析自动决定是否实际启用
@@ -85,7 +86,12 @@ class RAGService:
             "parallel_retrieve_merge": "rerank_documents",
         }
 
+        # 每节点执行耗时追踪（毫秒）
+        node_start_ts: dict[str, float] = {}
+        node_timings: dict[str, float] = {}
+
         # 图入口第一个节点一开始就算活跃
+        node_start_ts["analyze_kg_intent"] = time.perf_counter() * 1000
         yield StreamEvent(event="node_start", data="analyze_kg_intent")
 
         logger.info("[stream_rag] 开始执行 Agent 状态图（stream_mode=updates+custom）...")
@@ -101,6 +107,13 @@ class RAGService:
                         logger.info(
                             "[stream_rag] 自定义事件: %s → %s", node_name, custom_event,
                         )
+                        # 记录策略子节点的耗时
+                        if custom_event == "node_start":
+                            node_start_ts[node_name] = time.perf_counter() * 1000
+                        elif custom_event == "node_step" and node_name in node_start_ts:
+                            node_timings[node_name] = round(
+                                time.perf_counter() * 1000 - node_start_ts.pop(node_name), 1
+                            )
                         yield StreamEvent(event=custom_event, data=node_name)
                 continue
 
@@ -110,13 +123,20 @@ class RAGService:
                     if node_name not in GRAPH_NODES:
                         continue
                     logger.info("[stream_rag] 节点完成: %s", node_name)
+                    # 记录图节点的耗时
+                    if node_name in node_start_ts:
+                        node_timings[node_name] = round(
+                            time.perf_counter() * 1000 - node_start_ts.pop(node_name), 1
+                        )
                     yield StreamEvent(event="node_step", data=node_name)
 
                     # 预测下一个线性节点（分支节点由后续 updates 自动发现）
                     next_node = LINEAR_NEXT.get(node_name)
                     if next_node:
+                        node_start_ts[next_node] = time.perf_counter() * 1000
                         yield StreamEvent(event="node_start", data=next_node)
                     elif node_name == "rerank_documents" and request.enable_grade_documents:
+                        node_start_ts["grade_documents"] = time.perf_counter() * 1000
                         yield StreamEvent(event="node_start", data="grade_documents")
 
         # 获取最终状态
@@ -125,7 +145,12 @@ class RAGService:
         logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
 
         # 构建图内节点的 I/O 数据 + 处理 agent_path
-        node_data: dict[str, dict[str, str | list[str]]] = self._build_node_data(result, request)
+        node_data: dict = self._build_node_data(result, request)
+
+        # 将流中追踪的节点耗时合并到 node_data
+        for node_id, duration_ms in node_timings.items():
+            if node_id in node_data:
+                node_data[node_id]["durationMs"] = duration_ms
 
         agent_path = result.get("agent_path", [])
         agent_path = [p for p in agent_path if "skipped" not in p]
@@ -230,118 +255,196 @@ class RAGService:
         logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
 
     @staticmethod
-    def _doc_items(doc_list: list, max_docs: int = 8) -> list[str]:
-        """生成文档列表项（每项含来源和内容预览）"""
-        items = []
-        for i, doc in enumerate(doc_list[:max_docs]):
-            src = doc.metadata.get("url") or doc.metadata.get("filename", f"文档{i+1}")
-            preview = doc.page_content[:100].replace("\n", " ")
-            items.append(f"来源: {src}\n{preview}...")
-        if len(doc_list) > max_docs:
-            items.append(f"... 及其他 {len(doc_list) - max_docs} 条")
-        return items
+    def _doc_detail(doc: Any) -> dict:
+        """将单个 Document 提取为结构化详情（含完整 content 和 metadata）"""
+        meta = doc.metadata
+        return {
+            "source": meta.get("url") or meta.get("filename", "未知来源"),
+            "content_length": len(doc.page_content),
+            "content": doc.page_content,
+            "score": getattr(doc, "score", None),
+            "metadata": {k: str(v) for k, v in meta.items()},
+        }
 
     @staticmethod
     def _build_node_data(
         result: dict, request: AgenticChatRequest, documents: list | None = None
-    ) -> dict[str, dict[str, str | list[str]]]:
-        """从 final_state 提取各图内节点的输入/输出数据（含具体内容列表）"""
+    ) -> dict:
+        """从 final_state 提取各节点完整的输入/输出数据
+
+        返回结构支持：
+          - input / output: string | list | dict（前端根据类型自适应渲染）
+          - durationMs: float（由调用方在流中追踪后注入）
+        """
         docs = result.get("documents", []) if documents is None else documents
         query = request.query
 
-        data: dict[str, dict[str, str | list[str]]] = {}
+        data: dict = {}
 
         # ── 意图分析 ──
         kg_intent = result.get("kg_intent", False)
         data["analyze_kg_intent"] = {
-            "input": f"用户问题: {query}",
-            "output": [
-                f"KG意图判定: {'是' if kg_intent else '否'}",
-                f"说明: {'问题涉及实体关系查询，需要启用图谱检索' if kg_intent else '问题不涉及实体关系，走标准RAG流程'}",
-            ],
+            "input": {
+                "query": query,
+            },
+            "output": {
+                "kg_intent": kg_intent,
+                "explanation": (
+                    "问题涉及实体关系查询，需要启用图谱检索"
+                    if kg_intent
+                    else "问题不涉及实体关系，走标准 RAG 流程"
+                ),
+            },
         }
 
-        # ── 子策略 I/O（前端流程图点击展示） ──
+        # ── 子策略 I/O（各策略使用独立结果） ──
         kg_context = result.get("kg_context", "")
+        semantic_docs = result.get("documents_semantic", docs)
+        bm25_docs = result.get("documents_bm25", [])
+        mq_docs = result.get("documents_multi_query", [])
+
         data["retrieve"] = {
-            "input": f"语义检索 + MMR: {query}",
-            "output": RAGService._doc_items(docs),
+            "input": {
+                "query": query,
+                "method": "语义检索 + MMR（最大边际相关性）",
+                "result_count": len(semantic_docs),
+            },
+            "output": {
+                "total_documents": len(semantic_docs),
+                "documents": [RAGService._doc_detail(d) for d in semantic_docs],
+            },
         }
         if request.enable_bm25:
-            bm25_count = result.get("documents_bm25_length", 0) or len(docs)
             data["bm25_retrieve"] = {
-                "input": f"BM25 关键词检索: {query}",
-                "output": f"BM25 检索完成（与语义结果合并去重，共 {len(docs)} 份文档）",
+                "input": {
+                    "query": query,
+                    "method": "BM25 关键词检索",
+                    "result_count": len(bm25_docs),
+                },
+                "output": {
+                    "total_documents": len(bm25_docs),
+                    "note": "BM25 独立检索结果（后续与语义检索合并去重）",
+                    "documents": [RAGService._doc_detail(d) for d in bm25_docs],
+                },
             }
         if request.enable_multi_query:
             data["multi_query_retrieve"] = {
-                "input": f"多角度查询检索: {query}",
-                "output": RAGService._doc_items(docs),
+                "input": {
+                    "query": query,
+                    "method": "多角度查询分解 + 语义检索",
+                    "result_count": len(mq_docs),
+                },
+                "output": {
+                    "total_documents": len(mq_docs),
+                    "documents": [RAGService._doc_detail(d) for d in mq_docs],
+                },
             }
         if kg_intent:
-            kg_status = f"知识图谱已检索（{len(kg_context)} 字符上下文）" if kg_context else "知识图谱检索无结果"
             data["kg_retrieve"] = {
-                "input": [f"Kuzu 图查询: {query}", f"KG意图: 是"],
-                "output": kg_status,
+                "input": {
+                    "query": query,
+                    "kg_intent": True,
+                    "retrieval_method": "Kuzu 图 + LLM 实体抽取",
+                },
+                "output": {
+                    "context_length": len(kg_context),
+                    "has_result": bool(kg_context),
+                    "context": kg_context if kg_context else "图谱检索无结果",
+                },
             }
 
-        # ── 并行检索合并（所有策略在内部并行执行） ──
+        # ── 并行检索合并 ──
         strategies = ["语义+MMR"]
         if request.enable_bm25: strategies.append("BM25")
-        if request.enable_multi_query: strategies.append("Multi-Query")
+        if request.enable_multi_query: strategies.append("多角度查询")
         if kg_intent: strategies.append("知识图谱")
         data["parallel_retrieve_merge"] = {
-            "input": [f"已汇聚 {len(strategies)} 路检索策略:"] + strategies,
-            "output": RAGService._doc_items(docs),
+            "input": {
+                "strategies_count": len(strategies),
+                "strategies": strategies,
+            },
+            "output": {
+                "total_documents": len(docs),
+                "documents": [RAGService._doc_detail(d) for d in docs],
+            },
         }
 
         # ── 重排序 ──
         if request.enable_rerank:
             data["rerank_documents"] = {
-                "input": [f"待重排序文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
-                "output": [f"重排序结果 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
+                "input": {
+                    "method": "Cohere Rerank 重排序",
+                    "documents_count": len(docs),
+                    "documents": [RAGService._doc_detail(d) for d in docs],
+                },
+                "output": {
+                    "reranked_count": len(docs),
+                    "result": f"已按相关性对 {len(docs)} 份文档重新排序",
+                    "documents": [RAGService._doc_detail(d) for d in docs],
+                },
             }
 
         # ── 文档评估 ──
         if request.enable_grade_documents:
-            relevant = result.get('documents_relevant', False)
-            grade_verdict = "全部通过" if relevant else "部分/全部未通过"
+            relevant = result.get("documents_relevant", False)
             data["grade_documents"] = {
-                "input": [f"待评估文档 ({len(docs)} 份):"] + (RAGService._doc_items(docs) if docs else []),
-                "output": [
-                    f"评估结论: {grade_verdict}",
-                    f"相关性: {'文档均合格，进入生成' if relevant else '不合格，触发重写/联网搜索'}",
-                ],
+                "input": {
+                    "documents_count": len(docs),
+                    "documents": [RAGService._doc_detail(d) for d in docs],
+                },
+                "output": {
+                    "all_relevant": relevant,
+                    "verdict": "全部通过" if relevant else "部分/全部未通过",
+                    "action": (
+                        "文档均合格，进入生成阶段"
+                        if relevant
+                        else "不合格，触发查询重写或联网搜索降级"
+                    ),
+                },
             }
 
         # ── 查询重写 ──
         if request.enable_transform_query:
-            rewritten_q = result.get('rewritten_query', query)
+            rewritten_q = result.get("rewritten_query", query)
+            iteration = result.get("iteration_count", 0)
             data["transform_query"] = {
-                "input": f"原始问题: {query}",
-                "output": f"改写后查询: {rewritten_q}",
+                "input": {
+                    "original_query": query,
+                    "iteration": iteration,
+                    "max_iterations": result.get("max_iterations", 3),
+                },
+                "output": {
+                    "rewritten_query": rewritten_q,
+                    "changed": rewritten_q != query,
+                    "note": (
+                        "查询已改写以优化检索效果"
+                        if rewritten_q != query
+                        else "查询未发生变化"
+                    ),
+                },
             }
 
         # ── 联网搜索 ──
         if request.enable_web_search:
-            web_results = [d for d in docs if d.metadata.get("source") == "web"] if docs else []
-            if web_results:
-                web_items = []
-                for d in web_results[:5]:
-                    url = d.metadata.get("url", "未知来源")
-                    preview = d.page_content[:80].replace("\n", " ")
-                    web_items.append(f"{url}\n{preview}...")
-                if len(web_results) > 5:
-                    web_items.append(f"... 及其他 {len(web_results) - 5} 条")
-                data["web_search"] = {
-                    "input": f"联网搜索词: {query}",
-                    "output": web_items,
-                }
-            else:
-                data["web_search"] = {
-                    "input": f"联网搜索词: {query}",
-                    "output": ["搜索结果已合并到文档集，可在对应文档节点查看详情"],
-                }
+            web_results = (
+                [d for d in docs if d.metadata.get("source") == "web"]
+                if docs
+                else []
+            )
+            data["web_search"] = {
+                "input": {
+                    "query": query,
+                    "total_web_results": len(web_results),
+                },
+                "output": {
+                    "total_results": len(web_results),
+                    "results": (
+                        [RAGService._doc_detail(d) for d in web_results]
+                        if web_results
+                        else [{"note": "联网搜索结果已合并到主文档集"}]
+                    ),
+                },
+            }
 
         return data
 

@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { MessageCircle, Database, Network, X } from 'lucide-vue-next'
 import * as flow from '../../composables/agentFlowState'
+import NodeDataRenderer from './NodeDataRenderer.vue'
 
 const route = useRoute()
 const navItems = [
@@ -113,8 +114,10 @@ function getNodeInfo(id: string): flow.NodeDataInfo | undefined {
   return flow.nodeDataMap.value[id]
 }
 
-function isArray(val: unknown): val is unknown[] {
-  return Array.isArray(val)
+function durationColor(ms: number): string {
+  if (ms < 200) return 'bg-emerald-900/40 text-emerald-400'
+  if (ms < 1000) return 'bg-amber-900/40 text-amber-400'
+  return 'bg-red-900/40 text-red-400'
 }
 
 function onNodeClick(n: N, event: MouseEvent) {
@@ -417,12 +420,15 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         </g>
       </svg>
 
-      <!-- ═══ 节点信息 Popover（Teleport 到 body 避免被 sidebar 层叠上下文遮挡） ═══ -->
+      <!-- ════════════════════════════════════════════════════════════
+               节点信息 Popover（Teleport 到 body）
+               自适应渲染：string / string[] / Record<string, unknown>
+               ════════════════════════════════════════════════════════════ -->
       <Teleport to="body">
         <div v-if="flow.selectedNodeId.value"
-          class="node-popover fixed z-[9999] bg-slate-800 border border-slate-600 rounded-lg shadow-2xl w-64 overflow-hidden"
+          class="node-popover fixed z-[9999] bg-slate-800 border border-slate-600 rounded-lg shadow-2xl w-72 overflow-hidden"
           :style="{ left: popoverLeft + 'px', top: popoverTop + 'px' }">
-          <!-- 标题 -->
+          <!-- 标题 + 关闭 -->
           <div class="flex items-center justify-between px-3 py-2 border-b border-slate-700">
             <span class="text-xs font-semibold text-slate-200">
               {{ byId(flow.selectedNodeId.value)?.label }}
@@ -432,76 +438,56 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
               <X class="w-3 h-3" />
             </button>
           </div>
-          <!-- 状态 -->
-          <div class="px-3 py-1.5 border-b border-slate-700/50">
-            <span class="text-[10px] text-slate-500 mr-2">状态</span>
+          <!-- 状态 + 执行时间 -->
+          <div class="px-3 py-1.5 border-b border-slate-700/50 flex items-center gap-3">
+            <span class="text-[10px] text-slate-500">状态</span>
             <span class="text-[11px]" :class="nodeStatusColor(flow.selectedNodeId.value)">
               {{ nodeStatusText(flow.selectedNodeId.value) }}
             </span>
+            <span v-if="selectedNodeInfo?.durationMs" class="ml-auto">
+              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                :class="durationColor(selectedNodeInfo.durationMs)">
+                {{ (selectedNodeInfo.durationMs).toFixed(1) }} ms
+              </span>
+            </span>
           </div>
-          <!-- I/O 数据（已执行节点） -->
+          <!-- 已执行 → 展示 I/O -->
           <template v-if="isNodeExecuted(flow.selectedNodeId.value)">
-          <div class="px-3 py-2 space-y-1.5">
-            <!-- 输入 -->
-            <div>
-              <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
-                @click.stop="popoverShowInput = !popoverShowInput">
-                <span class="text-[10px] font-mono text-blue-400/70">{{ popoverShowInput ? '▾' : '▸' }}</span>
-                <span class="text-[10px] font-medium text-blue-400/70">输入</span>
+            <template v-if="selectedNodeInfo">
+              <!-- 输入 -->
+              <div class="px-3 py-2 border-b border-slate-700/30">
+                <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
+                  @click.stop="popoverShowInput = !popoverShowInput">
+                  <span class="text-[10px] font-mono text-blue-400/70">{{ popoverShowInput ? '▾' : '▸' }}</span>
+                  <span class="text-[10px] font-medium text-blue-400/70">输入</span>
+                </div>
+                <div v-if="popoverShowInput" class="mt-1">
+                  <NodeDataRenderer :val="selectedNodeInfo.input" />
+                </div>
               </div>
-              <template v-if="popoverShowInput">
-                <!-- 字符串 -->
-                <p v-if="selectedNodeInfo && !isArray(selectedNodeInfo.input)"
-                  class="mt-0.5 text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
-                  {{ selectedNodeInfo.input }}
-                </p>
-                <!-- 数组逐条列表 -->
-                <ul v-else-if="selectedNodeInfo && isArray(selectedNodeInfo.input)"
-                  class="mt-0.5 space-y-1 max-h-40 overflow-y-auto">
-                  <li v-for="(item, i) in selectedNodeInfo.input" :key="i"
-                    class="text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
-                    {{ item }}
-                  </li>
-                </ul>
-                <p v-else class="mt-0.5 text-[10px] text-slate-500 italic">无输入数据</p>
-              </template>
-            </div>
-            <!-- 输出 -->
-            <div>
-              <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
-                @click.stop="popoverShowOutput = !popoverShowOutput">
-                <span class="text-[10px] font-mono text-emerald-400/70">{{ popoverShowOutput ? '▾' : '▸' }}</span>
-                <span class="text-[10px] font-medium text-emerald-400/70">输出</span>
+              <!-- 输出 -->
+              <div class="px-3 py-2">
+                <div class="flex items-center gap-1 cursor-pointer select-none hover:bg-slate-700/30 rounded px-1 -mx-1"
+                  @click.stop="popoverShowOutput = !popoverShowOutput">
+                  <span class="text-[10px] font-mono text-emerald-400/70">{{ popoverShowOutput ? '▾' : '▸' }}</span>
+                  <span class="text-[10px] font-medium text-emerald-400/70">输出</span>
+                </div>
+                <div v-if="popoverShowOutput" class="mt-1">
+                  <NodeDataRenderer :val="selectedNodeInfo.output" />
+                </div>
               </div>
-              <template v-if="popoverShowOutput">
-                <!-- 字符串 -->
-                <p v-if="selectedNodeInfo && !isArray(selectedNodeInfo.output)"
-                  class="mt-0.5 text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
-                  {{ selectedNodeInfo.output }}
-                </p>
-                <!-- 数组逐条列表 -->
-                <ul v-else-if="selectedNodeInfo && isArray(selectedNodeInfo.output)"
-                  class="mt-0.5 space-y-1 max-h-40 overflow-y-auto">
-                  <li v-for="(item, i) in selectedNodeInfo.output" :key="i"
-                    class="text-[10px] text-slate-400 leading-relaxed whitespace-pre-wrap break-all bg-slate-900/50 rounded px-1.5 py-1">
-                    {{ item }}
-                  </li>
-                </ul>
-                <p v-else class="mt-0.5 text-[10px] text-slate-500 italic">无输出数据</p>
-              </template>
+            </template>
+            <div v-else class="px-3 py-2">
+              <p class="text-[10px] text-slate-500 italic">节点已执行，但本次查询未产生详细数据</p>
             </div>
+          </template>
+          <!-- 未执行提示 -->
+          <div v-else class="px-3 py-2">
+            <p class="text-[10px] text-slate-500 leading-relaxed">
+              {{ getNotExecutedReason(flow.selectedNodeId.value) }}
+            </p>
           </div>
-          <div v-if="!selectedNodeInfo" class="px-3 py-2">
-            <p class="text-[10px] text-slate-500 italic">节点已执行，但本次查询未产生详细数据</p>
-          </div>
-        </template>
-        <!-- 未执行提示 -->
-        <div v-else class="px-3 py-2">
-          <p class="text-[10px] text-slate-500 leading-relaxed">
-            {{ getNotExecutedReason(flow.selectedNodeId.value) }}
-          </p>
         </div>
-      </div>
       </Teleport>
     </div>
 

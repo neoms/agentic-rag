@@ -19,12 +19,15 @@ export const enableMultiQuery: Ref<boolean> = ref(false)
 
 /** 每轮提问的节点 I/O 数据记录（仅前端，新提问时清空）
  *  key = 节点 ID (如 'retrieve')
- *  value = { input: string | string[], output: string | string[] }
- *  当为 string[] 时，前端以列表形式逐条展示
+ *  value = { input, output, durationMs }
+ *  input/output 支持字符串、字符串数组、结构化对象三种格式
+ *  前端根据类型自适应渲染
  */
 export type NodeDataInfo = {
-  input: string | string[];
-  output: string | string[];
+  input: string | string[] | Record<string, unknown>;
+  output: string | string[] | Record<string, unknown>;
+  /** 节点执行耗时（毫秒） */
+  durationMs?: number;
 }
 export const nodeDataMap: Ref<Record<string, NodeDataInfo>> = ref({})
 
