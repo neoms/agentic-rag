@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     rerank_model: str = "gte-rerank"  # 百炼文本重排序模型
     rerank_top_k: int = 5  # 重排序后保留的文档数
 
+    # ========== 文档评估（grade_documents score 预筛） ==========
+    # 阈值标定建议：先跑一轮真实数据，观察 rerank_score 分布再微调
+    grade_score_irrelevant_max: float = 0.25  # 全体文档最高分 ≤ 此值 → 直接 IRRELEVANT（负判定，0 LLM）
+    grade_score_relevant_min: float = 0.70    # top1 分 ≥ 此值 → 候选正判定（还需满足断层）
+    grade_score_relevant_gap: float = 0.10    # top1 与 top2 的最小分差（断层检测，规避绝对阈值误判）
+
     # ========== 对话记忆 ==========
     memory_window_size: int = 20
 

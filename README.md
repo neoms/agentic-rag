@@ -45,6 +45,9 @@ cp .env.example .env
 | `RERANK_ENABLED` | 是否启用重排序 | `true` |
 | `RERANK_MODEL` | 重排序模型 | `gte-rerank` |
 | `RERANK_TOP_K` | 重排序后保留数 | `5` |
+| `GRADE_SCORE_IRRELEVANT_MAX` | 文档评估负判定：全体文档最高分 ≤ 此值直接不相关（0 LLM） | `0.25` |
+| `GRADE_SCORE_RELEVANT_MIN` | 文档评估正判定：top1 分数下限 | `0.70` |
+| `GRADE_SCORE_RELEVANT_GAP` | 文档评估正判定：top1 与 top2 最小分差（断层检测） | `0.10` |
 | `MEMORY_WINDOW_SIZE` | 对话记忆窗口 | `20` |
 | `MAX_UPLOAD_SIZE_MB` | 上传文件大小限制 | `10` |
 | `KG_DATA_DIR` | 知识图谱数据目录 | `kg_data` |

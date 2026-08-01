@@ -148,11 +148,37 @@ def _extract_keywords(text: str) -> tuple[set[str], int]:
     return words | bigrams, core_count
 
 
+def _collect_rerank_scores(documents: list[Document]) -> list[float] | None:
+    """收集文档的 rerank_score（仅当全部文档都有有效分数）
+
+    rerank 精排后的文档按相关性降序排列，返回与 documents 顺序一致的分数列表；
+    任一文档缺分（rerank 未执行 / 禁用 / API 异常降级）则返回 None，
+    由调用方无缝降级到 jieba 通道。
+
+    Returns:
+        list[float] | None: 分数列表，或 None（无 score 可用）
+    """
+    scores: list[float] = []
+    for doc in documents:
+        s = doc.metadata.get("rerank_score")
+        if not isinstance(s, (int, float)):
+            return None
+        scores.append(float(s))
+    return scores or None
+
+
 def grade_documents(state: AgentState) -> dict[str, Any]:
     """文档评估节点：判断检索结果是否与问题相关
 
-    新增文档过滤逻辑：
-    - 对所有文档做 jieba 关键词评分（0 额外 API 开销）
+    分层漏斗结构（按成本从低到高）：
+    1. jieba 关键词评分 + 分档过滤（0 额外 API 开销）
+    2. rerank_score 快速通道（0 LLM 调用，仅 rerank 精排已执行时可用）：
+       - 全体低分 → 直接 IRRELEVANT（补上 jieba 缺失的"负判定"能力）
+       - top1 高分 + 断层 → 直接 RELEVANT（补上同义词/改写等语义盲区）
+    3. jieba 快速路径（任一保留文档 overlap 达标 → RELEVANT）
+    4. qwen-turbo LLM 兜底（仅模糊地带才触发）
+
+    文档过滤规则（沿用原逻辑）：
     - 文档数 ≤ 3：全部保留，不做过滤（防数据丢失）
     - 文档数 4-5：宽松过滤，剔除 overlap=0 的文档
     - 文档数 ≥ 6：严格过滤，剔除 overlap < 阈值的文档
@@ -198,6 +224,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
     if total <= MIN_KEEP:
         # 文档太少 → 全部保留，不做任何过滤
         _filter_note = "keep_all (docs≤3)"
+        keep_indices = set(range(total))
         filtered = list(documents)
     else:
         if total <= 5:
@@ -219,22 +246,56 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
 
     logger.info("评估节点: 过滤结果: %d→%d docs (%s)", total, len(filtered), _filter_note)
 
-    # ── 快速路径检查（任一保留文档 overlap 达标） ──
+    # ── 2. rerank_score 快速通道（0 LLM 调用，需 rerank 精排已执行） ──
+    #    文档按 rerank score 降序排列，用"排序位置 + 断层"代替绝对阈值，
+    #    规避不同 query 下 score 分布整体偏移导致的误判。
+    scores = _collect_rerank_scores(documents)
+    if scores is not None:
+        top1 = scores[0]
+        # 负判定：全体低分 → 文档库无答案（jieba 词汇匹配无法判定的场景）
+        if top1 <= settings.grade_score_irrelevant_max:
+            logger.info(
+                "评估节点: score 通道 → IRRELEVANT (max_score=%.4f ≤ %.2f)",
+                top1, settings.grade_score_irrelevant_max,
+            )
+            return {
+                "documents_relevant": False,
+                "documents": filtered,
+                "agent_path": ["grade_documents (score irrelevant)"],
+            }
+        # 正判定：top1 高分 + 与 top2 明显断层（或仅 1 篇文档）
+        top2 = scores[1] if len(scores) > 1 else None
+        if top1 >= settings.grade_score_relevant_min and (
+            top2 is None or top1 - top2 >= settings.grade_score_relevant_gap
+        ):
+            logger.info(
+                "评估节点: score 通道 → RELEVANT (top1=%.4f, gap=%.4f)",
+                top1, (top1 - top2) if top2 is not None else float("inf"),
+            )
+            # 返回 rerank 语义 top 3：score 通道命中说明 rerank 信号可信，
+            # 词法过滤可能误删同义词/改写场景下的语义相关文档。
+            # 与 LLM 兜底分支的 filtered[:3] 上下文量相当。
+            return {
+                "documents_relevant": True,
+                "documents": documents[:3],
+                "agent_path": ["grade_documents (score relevant)"],
+            }
+
+    # ── 3. 快速路径检查（任一保留文档 overlap 达标） ──
     if query_keywords:
         for overlap, idx, doc in scored:
-            if idx in {i for i, d in enumerate(documents) if d in filtered}:
-                if overlap >= threshold:
-                    logger.info(
-                        "评估节点: 快速路径 → RELEVANT (overlap=%d/%d, keep=%d docs)",
-                        overlap, qk_count, len(filtered),
-                    )
-                    return {
-                        "documents_relevant": True,
-                        "documents": filtered,
-                        "agent_path": ["grade_documents (keyword match)"],
-                    }
+            if idx in keep_indices and overlap >= threshold:
+                logger.info(
+                    "评估节点: 快速路径 → RELEVANT (overlap=%d/%d, keep=%d docs)",
+                    overlap, query_core_count, len(filtered),
+                )
+                return {
+                    "documents_relevant": True,
+                    "documents": filtered,
+                    "agent_path": ["grade_documents (keyword match)"],
+                }
 
-    # ── LLM 精确评估（用过滤后文档中 top 3） ──
+    # ── 4. LLM 精确评估（用过滤后文档中 top 3） ──
     llm = create_fast_llm()
     llm_docs = filtered[:3]
     docs_text = "\n".join(
