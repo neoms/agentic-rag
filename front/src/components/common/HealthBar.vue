@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useHealth } from '../../composables/useHealth'
-import { Activity, Server, Cpu, Database, RefreshCw } from 'lucide-vue-next'
+import { Activity, RefreshCw } from 'lucide-vue-next'
 
 const { health, error, loading, refresh } = useHealth()
 
@@ -42,22 +42,6 @@ const statusBg = computed(() => {
             <RefreshCw class="w-3.5 h-3.5 text-slate-500" />
           </button>
         </div>
-
-        <!-- 系统信息 -->
-        <template v-if="health">
-          <div class="flex items-center gap-1.5 text-xs text-slate-400">
-            <Server class="w-3 h-3" />
-            <span>LLM: {{ health.llm_model }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 text-xs text-slate-400">
-            <Cpu class="w-3 h-3" />
-            <span>Embedding: {{ health.embedding_model }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 text-xs text-slate-400">
-            <Database class="w-3 h-3" />
-            <span>文档: {{ health.chroma_count }}</span>
-          </div>
-        </template>
 
         <!-- 错误状态 -->
         <div v-if="error" class="text-xs text-red-400 flex items-center gap-1.5">

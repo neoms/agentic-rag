@@ -72,22 +72,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 )
 async def health():
     try:
-        stats = vector_store.get_collection_stats()
-        return {
-            "status": "ok",
-            "version": "0.1.0",
-            "chroma_count": stats["count"],
-            "llm_model": settings.llm_model,
-            "embedding_model": settings.embedding_model,
-        }
+        vector_store.get_collection_stats()
+        return {"status": "ok", "version": "0.1.0"}
     except Exception:
-        return {
-            "status": "degraded",
-            "version": "0.1.0",
-            "chroma_count": 0,
-            "llm_model": settings.llm_model,
-            "embedding_model": settings.embedding_model,
-        }
+        return {"status": "degraded", "version": "0.1.0"}
 
 
 # 注册 API 路由

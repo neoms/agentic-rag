@@ -2,9 +2,6 @@
 export interface HealthResponse {
   status: 'ok' | 'degraded'
   version: string
-  chroma_count: number
-  llm_model: string
-  embedding_model: string
 }
 
 // ===== 对话模型 =====
