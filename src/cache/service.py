@@ -75,36 +75,43 @@ class CacheService:
         self,
         query: str,
         signature: str,
-    ) -> tuple[dict | None, list[float] | None]:
+    ) -> tuple[dict | None, list[float] | None, dict]:
         """先精准后语义。
 
         Returns:
-            (命中条目, 问题向量)
+            (命中条目, 问题向量, 查询信息)
             - 命中：条目非 None，向量为 None
             - 未命中：条目为 None；若语义层已计算向量则返回该向量供检索复用
+            - 查询信息: {cache_type: exact|semantic|none, similarity, query_norm}
         """
+        info: dict = {
+            "cache_type": "none",
+            "similarity": None,
+            "query_norm": normalize_query(query),
+        }
         if not settings.cache_enabled:
-            return None, None
-
-        query_norm = normalize_query(query)
+            return None, None, info
+        query_norm = info["query_norm"]
 
         # ── 第 1 层：精准缓存 ──
         if settings.cache_exact_enabled:
             entry = self._storage.get_exact(query_norm, signature)
             if entry is not None:
+                info["cache_type"] = "exact"
+                info["similarity"] = 1.0
                 logger.info("[cache] 精准命中: norm='%s', hit_count=%d",
                             query_norm, entry["hit_count"])
-                return entry, None
+                return entry, None, info
 
         # ── 第 2 层：语义缓存（需要问题向量） ──
         if not settings.cache_semantic_enabled:
-            return None, None
+            return None, None, info
         try:
             from src.backend.embedding import get_embedding_client
             vector = get_embedding_client().embed_query(query)
         except Exception as e:
             logger.warning("[cache] 语义向量计算失败，跳过语义层: %s", e)
-            return None, None
+            return None, None, info
 
         candidates = self._storage.semantic_search(
             vector,
@@ -114,18 +121,20 @@ class CacheService:
         )
         if candidates:
             best = candidates[0]
+            info["similarity"] = best["similarity"]
             entry = self._storage.get_by_id(best["id"])
             if entry is not None:
+                info["cache_type"] = "semantic"
                 logger.info("[cache] 语义命中: sim=%.4f, hit_count=%d",
                             best["similarity"], entry["hit_count"])
-                return entry, None
+                return entry, None, info
             logger.info("[cache] 语义候选命中但条目已失效: id=%d", best["id"])
 
         best_sim = (
             f"{candidates[0]['similarity']:.4f}" if candidates else "n/a"
         )
         logger.info("[cache] 未命中: norm='%s', best_sim=%s", query_norm, best_sim)
-        return None, vector
+        return None, vector, info
 
     def store(
         self,
@@ -167,12 +176,12 @@ class CacheService:
         except Exception as e:
             logger.warning("[cache] 写回失败: %s", e)
 
-    def replay(self, entry: dict) -> list[StreamEvent]:
-        """构造缓存命中的 SSE 事件序列
+    def replay(self, entry: dict, path: list[str]) -> list[StreamEvent]:
+        """构造缓存命中的 SSE 回放事件
 
-        顺序与真实链路一致：token → source → path → citations → hallucination
-        → node_data → done。node_start/node_step 动画事件不回放，流程图按
-        存储的 agent_path 显示完成节点。
+        顺序：token → source → citations → hallucination → path。
+        其中 path 由调用方传入（本次请求的缓存专属路径，而非存储的原始路径）；
+        node_start/node_step/node_data/done 由 rag_service 在调用方补发。
         """
         events: list[StreamEvent] = []
         answer = entry["answer"]
@@ -181,10 +190,6 @@ class CacheService:
         events.append(StreamEvent(
             event="source",
             data=json.dumps(entry["sources"], ensure_ascii=False),
-        ))
-        events.append(StreamEvent(
-            event="path",
-            data=json.dumps(entry["agent_path"], ensure_ascii=False),
         ))
         citations = entry.get("citations") or {}
         if citations:
@@ -197,8 +202,10 @@ class CacheService:
                 event="hallucination",
                 data=json.dumps(entry["hallucination"], ensure_ascii=False),
             ))
-        events.append(StreamEvent(event="node_data", data="{}"))
-        events.append(StreamEvent(event="done", data=""))
+        events.append(StreamEvent(
+            event="path",
+            data=json.dumps(path, ensure_ascii=False),
+        ))
         return events
 
     def stats(self) -> dict:

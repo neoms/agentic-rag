@@ -13,41 +13,49 @@ const navItems = [
 
 // ── SVG 节点布局 ──
 // Flow:
-//   START → analyze_kg_intent
-//              ↓ (总线)
-//       → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
-//              ↓ (全部收敛到合并)
-//       → merge → rerank → grade → [相关] → judge_complexity (qwen-turbo)
-//                                  → [不相关] → transform_query ─ retry → retrieve
-//                                            → web_search ──────────── → judge
-//       judge_complexity → [SIMPLE] → generate_simple (qwen-turbo)
-//                        → [COMPLEX] → generate_complex (qwen-max)
-//       generate_simple/complex → [反思] → check_hallucination → END
-//   check_hallucination → [FAILED + retries<max] → judge (retry loop)
-//   viewBox 0 0 380 480
+//   START → cache_lookup（缓存查询，虚拟节点）
+//              ├─ [命中] → cache_replay（输出回放，虚拟节点） → END
+//              └─ [未命中] → analyze_kg_intent
+//                    ↓ (总线)
+//            → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
+//                    ↓ (全部收敛到合并)
+//            → merge → rerank → grade → [相关] → judge_complexity (qwen-turbo)
+//                                     → [不相关] → transform_query ─ retry → retrieve
+//                                               → web_search ──────────── → judge
+//            judge_complexity → [SIMPLE] → generate_simple (qwen-turbo)
+//                             → [COMPLEX] → generate_complex (qwen-max)
+//            generate_simple/complex → [反思] → check_hallucination
+//            check_hallucination → cache_store（缓存写入，虚拟节点） → END
+//            幻觉 FAILED：不重试，直接返回（流程图不画重试回环）
+//   viewBox 0 0 380 520
 type NodeState = 'active' | 'done' | 'disabled' | 'skipped' | 'pending'
 interface N { id: string; label: string; x: number; y: number; w: number; h: number }
 const NODES: N[] = [
-  // 入口
-  { id: 'analyze_kg_intent',   label: '意图分析',   x: 145, y: 34, w: 70, h: 26 },
+  // 缓存虚拟节点（服务层发出事件，非 LangGraph 节点）
+  { id: 'cache_lookup',         label: '缓存查询',   x: 145, y: 34, w: 70, h: 26 },
+  { id: 'cache_replay',         label: '输出回放',   x: 304, y: 34, w: 60, h: 22 },
+  // 入口（主链整体下移 36px 为缓存节点腾出空间）
+  { id: 'analyze_kg_intent',   label: '意图分析',   x: 145, y: 70, w: 70, h: 26 },
   // 检索策略行（平级，语义检索必选，其余可选）
-  { id: 'retrieve',             label: '语义检索',   x: 8,   y: 78, w: 60, h: 22 },
-  { id: 'bm25_retrieve',        label: 'BM25',       x: 80,  y: 78, w: 52, h: 22 },
-  { id: 'multi_query_retrieve', label: '多角度查询',  x: 144, y: 78, w: 68, h: 22 },
-  { id: 'kg_retrieve',          label: '图谱检索',   x: 224, y: 78, w: 68, h: 22 },
+  { id: 'retrieve',             label: '语义检索',   x: 8,   y: 114, w: 60, h: 22 },
+  { id: 'bm25_retrieve',        label: 'BM25',       x: 80,  y: 114, w: 52, h: 22 },
+  { id: 'multi_query_retrieve', label: '多角度查询',  x: 144, y: 114, w: 68, h: 22 },
+  { id: 'kg_retrieve',          label: '图谱检索',   x: 224, y: 114, w: 68, h: 22 },
   // 合并
-  { id: 'parallel_retrieve_merge',label:'检索合并',  x: 150, y: 126,w: 60, h: 22 },
+  { id: 'parallel_retrieve_merge',label:'检索合并',  x: 150, y: 162, w: 60, h: 22 },
   // 可选节点（主链，可被 bypass）
-  { id: 'rerank_documents',     label: '重排序',     x: 150, y: 166,w: 60, h: 22 },
-  { id: 'grade_documents',      label: '文档评估',   x: 150, y: 206,w: 60, h: 22 },
+  { id: 'rerank_documents',     label: '重排序',     x: 150, y: 202, w: 60, h: 22 },
+  { id: 'grade_documents',      label: '文档评估',   x: 150, y: 242, w: 60, h: 22 },
   // 分支节点（同排：左-查询重写，中-复杂度判定，右-联网搜索）
-  { id: 'transform_query',      label: '查询重写',   x: 8,   y: 248,w: 60, h: 22 },
-  { id: 'judge_complexity',     label: '复杂度判定', x: 150, y: 248,w: 60, h: 22 },
-  { id: 'web_search',           label: '联网搜索',   x: 252, y: 248,w: 60, h: 22 },
+  { id: 'transform_query',      label: '查询重写',   x: 8,   y: 284, w: 60, h: 22 },
+  { id: 'judge_complexity',     label: '复杂度判定', x: 150, y: 284, w: 60, h: 22 },
+  { id: 'web_search',           label: '联网搜索',   x: 252, y: 284, w: 60, h: 22 },
   // 并联生成节点
-  { id: 'generate_simple',      label: '简单生成',   x: 70,  y: 294,w: 60, h: 22 },
-  { id: 'generate_complex',     label: '复杂生成',   x: 212, y: 294,w: 60, h: 22 },
-  { id: 'check_hallucination',  label: '幻觉检测',   x: 150, y: 350,w: 60, h: 22 },
+  { id: 'generate_simple',      label: '简单生成',   x: 70,  y: 330, w: 60, h: 22 },
+  { id: 'generate_complex',     label: '复杂生成',   x: 212, y: 330, w: 60, h: 22 },
+  { id: 'check_hallucination',  label: '幻觉检测',   x: 150, y: 386, w: 60, h: 22 },
+  // 缓存写回虚拟节点
+  { id: 'cache_store',          label: '缓存写入',   x: 150, y: 422, w: 60, h: 22 },
 ]
 const byId = (id: string): N => NODES.find(n => n.id === id)!
 
@@ -72,6 +80,12 @@ function state(id: string): NodeState {
   if (flow.currentNode.value === id) return 'active'
   return 'pending'
 }
+
+// ── 缓存命中高亮：命中时点亮 cache_lookup → cache_replay 分支，主链置灰 ──
+const cacheHit = computed(() =>
+  flow.completedNodes.value.includes('cache_replay')
+)
+const mainChainOpacity = computed(() => (cacheHit.value ? 0.15 : 1))
 
 // ── 节点点击交互 ──
 const svgContainerRef = ref<HTMLElement | null>(null)
@@ -123,6 +137,26 @@ function durationColor(ms: number): string {
   if (ms < 200) return 'bg-emerald-900/40 text-emerald-400'
   if (ms < 1000) return 'bg-amber-900/40 text-amber-400'
   return 'bg-red-900/40 text-red-400'
+}
+
+function durationFill(ms: number): string {
+  if (ms < 200) return '#34d399'
+  if (ms < 1000) return '#fbbf24'
+  return '#f87171'
+}
+
+function nodeDuration(id: string): number | undefined {
+  return flow.nodeDataMap.value[id]?.durationMs
+}
+
+function nodeDurationText(id: string): string {
+  const ms = nodeDuration(id)
+  return ms != null ? `${ms.toFixed(0)}ms` : ''
+}
+
+function nodeDurationColor(id: string): string {
+  const ms = nodeDuration(id)
+  return ms != null ? durationFill(ms) : ''
 }
 
 function onNodeClick(n: N, event: MouseEvent) {
@@ -241,7 +275,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           @click.stop="closePopover">✕ 关闭</span>
       </div>
 
-      <svg viewBox="0 0 380 480" class="w-full" style="max-height: 480px">
+      <svg viewBox="0 0 380 520" class="w-full" style="max-height: 520px">
         <defs>
           <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
@@ -262,53 +296,61 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <rect x="150" y="2" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
         <text x="180" y="14" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">START</text>
 
-        <!-- ═══ START → analyze ═══ -->
+        <!-- ═══ START → cache_lookup ═══ -->
         <line x1="180" y1="26" x2="180" y2="34" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
 
-        <!-- ═══ analyze_kg_intent 节点 ═══ -->
-        <rect x="145" y="34" width="70" height="26" rx="4" ry="4"
-          :fill="FILL[state('analyze_kg_intent')]"
-          :stroke="STROKE[state('analyze_kg_intent')]"
-          :stroke-width="state('analyze_kg_intent') === 'active' ? 2 : 1"
-          :filter="state('analyze_kg_intent') === 'active' ? 'url(#gl)' : ''"
-          :style="state('analyze_kg_intent') === 'active' ? 'animation: pulse 1.4s ease-in-out infinite' : ''"/>
-        <text x="180" y="47" text-anchor="middle" dominant-baseline="central"
-          :fill="TEXT[state('analyze_kg_intent')]"
-          class="text-[10px]">意图分析</text>
+        <!-- ═══ cache_lookup → analyze_kg_intent（未命中，主链） ═══ -->
+        <line x1="180" y1="60" x2="180" y2="70" stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+        <!-- ═══ cache_lookup → cache_replay（命中，琥珀色虚线高亮） ═══ -->
+        <path d="M 215 58 C 245 58, 275 52, 302 47" fill="none"
+          :stroke="cacheHit ? '#f59e0b' : '#475569'" stroke-width="1.2" stroke-dasharray="4 3"
+          :opacity="cacheHit ? 0.9 : 0.04" marker-end="url(#arrAmber)"/>
+
+        <!-- ═══ cache_replay → END（右侧下行） ═══ -->
+        <path d="M 334 56 L 334 470 L 180 470 L 180 476" fill="none" stroke="#475569"
+          stroke-width="1.5" :opacity="cacheHit ? 1 : 0.25" marker-end="url(#arr)"/>
+
+        <!-- ═══ 缓存分支标签 ═══ -->
+        <text x="222" y="40" class="text-[9px] fill-amber-400/80" :opacity="cacheHit ? 1 : 0.35">命中</text>
+        <text x="190" y="66" class="text-[9px] fill-slate-400/80">未命中</text>
+
+        <!-- ═══ 主链（命中时整体置灰） ═══ -->
+        <g :opacity="mainChainOpacity">
 
         <!-- ═══ analyze → retrieve（左下弯折线） ═══ -->
-        <path d="M 180 60 L 180 67 L 38 67 L 38 74"
+        <path d="M 180 96 L 180 103 L 38 103 L 38 110"
           stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
 
         <!-- ═══ 意图分析 → 检索总线（语义必选，其余可选扇出） ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- 意图分析 底部连到总线 -->
-          <line x1="180" y1="60" x2="180" y2="70"/>
+          <line x1="180" y1="96" x2="180" y2="106"/>
           <!-- 总线水平 -->
-          <line x1="38" y1="70" x2="322" y2="70"/>
+          <line x1="38" y1="106" x2="322" y2="106"/>
           <!-- 总线 → 语义检索（必选，始终可见） -->
-          <line x1="38" y1="70" x2="38" y2="78" marker-end="url(#arrCyan)"/>
+          <line x1="38" y1="106" x2="38" y2="114" marker-end="url(#arrCyan)"/>
           <!-- 总线 → bm25（可选） -->
-          <line x1="106" y1="70" x2="106" y2="78" marker-end="url(#arrCyan)"/>
+          <line x1="106" y1="106" x2="106" y2="114" marker-end="url(#arrCyan)"/>
           <!-- 总线 → 多角度查询（可选） -->
-          <line x1="178" y1="70" x2="178" y2="78" marker-end="url(#arrCyan)"/>
+          <line x1="178" y1="106" x2="178" y2="114" marker-end="url(#arrCyan)"/>
           <!-- 总线 → 图谱检索（意图分析自动） -->
-          <line x1="258" y1="70" x2="258" y2="78" marker-end="url(#arrCyan)"/>
+          <line x1="258" y1="106" x2="258" y2="114" marker-end="url(#arrCyan)"/>
         </g>
 
         <!-- ═══ 4 路检索 → merge 收敛 ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- 语义检索 → merge -->
-          <line x1="38" y1="100" x2="155" y2="126" marker-end="url(#arr)"/>
+          <line x1="38" y1="136" x2="155" y2="162" marker-end="url(#arr)"/>
           <!-- bm25 → merge -->
-          <line x1="106" y1="100" x2="165" y2="126" marker-end="url(#arr)"/>
+          <line x1="106" y1="136" x2="165" y2="162" marker-end="url(#arr)"/>
           <!-- 多角度查询 → merge -->
-          <line x1="178" y1="100" x2="180" y2="126" marker-end="url(#arr)"/>
+          <line x1="178" y1="136" x2="180" y2="162" marker-end="url(#arr)"/>
           <!-- 图谱检索 → merge -->
-          <line x1="258" y1="100" x2="195" y2="126" marker-end="url(#arr)"/>
+          <line x1="258" y1="136" x2="195" y2="162" marker-end="url(#arr)"/>
         </g>
 
-        <!-- ═══ 主链箭头 merge → rerank → grade → judge → [simple|complex] → check → END ═══ -->
+        <!-- ═══ 主链箭头 merge → rerank → grade → judge → [simple|complex] → check → cache_store → END ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- merge → rerank -->
           <line x1="180" :y1="byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h"
@@ -323,15 +365,15 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
                 x2="180" :y2="byId('judge_complexity').y"
             marker-end="url(#arr)" :opacity="mainEdgeOpacity('grade_to_gen')"/>
           <!-- judge → generate_simple（SIMPLE 分支左） -->
-          <path d="M 180 270 L 100 294" marker-end="url(#arr)" />
+          <path d="M 180 306 L 100 330" marker-end="url(#arr)" />
           <!-- judge → generate_complex（COMPLEX 分支右） -->
-          <path d="M 180 270 L 242 294" marker-end="url(#arr)" />
+          <path d="M 180 306 L 242 330" marker-end="url(#arr)" />
           <!-- generate_simple → check（左汇聚） -->
-          <path d="M 130 305 L 180 305" />
+          <path d="M 130 341 L 180 341" />
           <!-- generate_complex → check（右汇聚） -->
-          <path d="M 272 305 L 180 305" />
+          <path d="M 272 341 L 180 341" />
           <!-- 汇聚 → check_hallucination -->
-          <line x1="180" y1="305" x2="180" :y2="byId('check_hallucination').y" marker-end="url(#arr)"/>
+          <line x1="180" y1="341" x2="180" :y2="byId('check_hallucination').y" marker-end="url(#arr)"/>
         </g>
 
         <!-- ═══ Bypass 绕过线（右侧虚线弧线） ═══ -->
@@ -347,8 +389,8 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <path :d="`M 210 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2} C 240 ${byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2}, 240 ${byId('judge_complexity').y + byId('judge_complexity').h/2}, 210 ${byId('judge_complexity').y + byId('judge_complexity').h/2}`"
           fill="none" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="bothOff() ? 0.55 : 0.04" marker-end="url(#arrAmber)"/>
-        <!-- generate_simple/complex → 绕过 check → END -->
-        <path :d="`M 210 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30} C 230 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30}, 230 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}, 210 ${byId('check_hallucination').y + byId('check_hallucination').h + 60}`"
+        <!-- generate_simple/complex → 绕过 check → cache_store -->
+        <path :d="`M 210 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30} C 230 ${byId('check_hallucination').y + byId('check_hallucination').h/2 - 30}, 230 ${byId('cache_store').y + byId('cache_store').h/2}, 210 ${byId('cache_store').y + byId('cache_store').h/2}`"
           fill="none" :stroke="reflectionBypassColor()" stroke-width="1.2" stroke-dasharray="4 3"
           :opacity="reflectionBypassOpacity()" marker-end="url(#arrAmber)"/>
 
@@ -356,7 +398,7 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <text x="215" :y="byId('rerank_documents').y + byId('rerank_documents').h/2 - 5" :opacity="bypassOpacity('rerank')" :fill="bypassColor('rerank')" class="text-[9px]">绕过</text>
         <text x="215" :y="byId('grade_documents').y + byId('grade_documents').h + 14" :opacity="bypassOpacity('grade')" :fill="bypassColor('grade')" class="text-[9px]">绕过</text>
         <text x="225" :y="(byId('parallel_retrieve_merge').y + byId('parallel_retrieve_merge').h/2 + byId('judge_complexity').y + byId('judge_complexity').h/2) / 2 - 2" :opacity="bothOff() ? 0.6 : 0.04" fill="#f59e0b" class="text-[9px]">均关</text>
-        <text x="215" :y="byId('check_hallucination').y + byId('check_hallucination').h + 26" :opacity="reflectionBypassOpacity()" :fill="reflectionBypassColor()" class="text-[9px]">绕过</text>
+        <text x="215" :y="byId('cache_store').y - 16" :opacity="reflectionBypassOpacity()" :fill="reflectionBypassColor()" class="text-[9px]">绕过</text>
 
         <!-- ═══ 分支：grade → web_search / transform_query ═══ -->
         <g stroke="#475569" stroke-width="1.5" fill="none">
@@ -379,11 +421,8 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
 
         <!-- ═══ 回环曲线 ═══ -->
         <!-- transform_query → retrieve（循环回检索） -->
-        <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+22} C ${byId('transform_query').x} ${byId('transform_query').y+30}, -5 ${byId('transform_query').y+5}, -5 160 C -5 100, 38 100, 38 100`"
+        <path :d="`M ${byId('transform_query').x} ${byId('transform_query').y+22} C ${byId('transform_query').x} ${byId('transform_query').y+30}, -5 ${byId('transform_query').y+5}, -5 196 C -5 136, 38 136, 38 136`"
           fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arrAmber)"/>
-        <!-- check_hallucination → judge_complexity（幻觉重试） -->
-        <path :d="`M ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('check_hallucination').y + byId('check_hallucination').h + 3} C ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('check_hallucination').y + byId('check_hallucination').h + 3}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 42} ${byId('judge_complexity').y + byId('judge_complexity').h/2}, ${byId('check_hallucination').x + byId('check_hallucination').w/2 + 30} ${byId('judge_complexity').y + byId('judge_complexity').h/2}`"
-          fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#arrAmber)"/>
 
         <!-- ═══ 分支标签 ═══ -->
         <text x="186" :y="byId('grade_documents').y + byId('grade_documents').h + 34" class="text-[9px] fill-green-500/70">相关</text>
@@ -394,19 +433,25 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <text x="212" :y="byId('judge_complexity').y + byId('judge_complexity').h + 14" class="text-[9px] fill-amber-400/70">COMPLEX</text>
 
         <!-- ═══ 回环标签 ═══ -->
-        <text x="22" y="210" class="text-[9px] fill-amber-500/80" transform="rotate(-90 22 210)">回检索</text>
-        <text x="215" y="345" class="text-[9px] fill-red-400/80">重试</text>
+        <text x="22" y="246" class="text-[9px] fill-amber-500/80" transform="rotate(-90 22 246)">回检索</text>
 
         <!-- ═══ END ═══ -->
-        <rect x="150" y="440" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
-        <text x="180" y="452" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">END</text>
+        <rect x="150" y="476" width="60" height="24" rx="12" ry="12" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+        <text x="180" y="488" text-anchor="middle" dominant-baseline="central" class="text-[12px] fill-slate-400">END</text>
 
-        <!-- ═══ check → END ═══ -->
+        <!-- ═══ check → cache_store → END ═══ -->
         <line :x1="byId('check_hallucination').x + byId('check_hallucination').w/2"
               :y1="byId('check_hallucination').y + byId('check_hallucination').h"
-              :x2="byId('check_hallucination').x + byId('check_hallucination').w/2"
-              y2="440"
+              :x2="180"
+              :y2="byId('cache_store').y"
           stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+        <line :x1="180"
+              :y1="byId('cache_store').y + byId('cache_store').h"
+              x2="180"
+              y2="476"
+          stroke="#475569" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+        </g>
 
         <!-- ═══ 节点列表 ═══ -->
         <g v-for="n in NODES" :key="n.id" class="flow-node" :class="{ 'cursor-pointer': true }"
@@ -432,6 +477,12 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
             text-anchor="middle" dominant-baseline="central"
             class="text-[10px] fill-emerald-300"
           >✓</text>
+          <text v-if="state(n.id) === 'done' && nodeDurationText(n.id)"
+            :x="n.x + n.w + 3" :y="n.y + n.h/2"
+            text-anchor="start" dominant-baseline="central"
+            :fill="nodeDurationColor(n.id)"
+            class="text-[8px] font-mono"
+          >{{ nodeDurationText(n.id) }}</text>
         </g>
       </svg>
 

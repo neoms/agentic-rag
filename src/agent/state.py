@@ -71,6 +71,9 @@ class AgentState(TypedDict):
     documents_bm25: list[Document]
     documents_multi_query: list[Document]
 
+    # 重排序降级原因（API 异常时为非 None 字符串，正常为 None）
+    rerank_degraded: str | None
+
     # 各策略耗时（毫秒），由 parallel_retrieve_merge_node 返回
     strategy_timings_ms: dict[str, float]
 

@@ -103,12 +103,20 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
         logger.info("重排序节点: 全局禁用，透传 %d 个文档", len(documents))
         return {"agent_path": ["rerank (disabled)"]}
 
-    reranked = rerank_documents(query, documents, top_k=settings.rerank_top_k)
+    reranked, degraded_reason = rerank_documents(
+        query, documents, top_k=settings.rerank_top_k,
+    )
 
-    return {
+    update: dict[str, Any] = {
         "documents": reranked,
-        "agent_path": ["rerank"],
+        "rerank_degraded": degraded_reason,
     }
+    if degraded_reason:
+        update["agent_path"] = ["rerank (degraded)"]
+        logger.warning("重排序节点: 已降级为原始排序: %s", degraded_reason)
+    else:
+        update["agent_path"] = ["rerank"]
+    return update
 
 
 def _extract_keywords(text: str) -> tuple[set[str], int]:

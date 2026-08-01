@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 
 from src.agent.graph import agent_graph
 from src.agent.state import AgentState
+from src.config.settings import settings
 from src.models.chat import (
     AgenticChatRequest,
     SourceDocument,
@@ -45,19 +46,74 @@ class RAGService:
         logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
                      request.session_id, request.query[:80], request.enable_web_search)
 
-        # ── 多级缓存（精准 + 语义）：命中直接回放，未命中复用问题向量 ──
+        # ── 多级缓存（精准 + 语义）虚拟节点：命中回放，未命中复用问题向量 ──
+        # cache_lookup / cache_replay / cache_store 均为服务层虚拟节点
+        # （沿用 check_hallucination 模式：本服务发 node_start/node_step/node_data 事件）
         query_embedding: list[float] | None = None
+        cache_service = get_cache_service()
+        cache_lookup_data: dict | None = None
+        node_start_ts: dict[str, float] = {}
+        node_timings: dict[str, float] = {}
+
         if request.use_cache:
-            cache_service = get_cache_service()
-            cache_entry, query_embedding = cache_service.lookup(
-                request.query,
-                build_config_signature(request),
+            signature = build_config_signature(request)
+            # ── cache_lookup 虚拟节点：计时 → 查询 → 完成 ──
+            node_start_ts["cache_lookup"] = time.perf_counter() * 1000
+            yield StreamEvent(event="node_start", data="cache_lookup")
+            cache_entry, query_embedding, cache_info = cache_service.lookup(
+                request.query, signature,
             )
+            node_timings["cache_lookup"] = round(
+                time.perf_counter() * 1000 - node_start_ts.pop("cache_lookup"), 1
+            )
+            cache_lookup_data = {
+                "input": {
+                    "query": request.query,
+                    "normalized_query": cache_info.get("query_norm", ""),
+                    "config_signature": signature,
+                },
+                "output": {
+                    "hit": cache_entry is not None,
+                    "cache_type": cache_info.get("cache_type", "none"),
+                    "similarity": cache_info.get("similarity"),
+                    "hit_count": cache_entry["hit_count"] if cache_entry else None,
+                },
+                "durationMs": node_timings["cache_lookup"],
+            }
+            yield StreamEvent(event="node_step", data="cache_lookup")
+
             if cache_entry is not None:
-                logger.info("[stream_rag] 缓存命中: session=%s, query='%s'",
-                            request.session_id, request.query[:80])
-                for ev in cache_service.replay(cache_entry):
+                # ── 命中：输出回放（cache_replay 虚拟节点） ──
+                logger.info("[stream_rag] 缓存命中: session=%s, query='%s', type=%s",
+                            request.session_id, request.query[:80],
+                            cache_info.get("cache_type", "exact"))
+                cache_path = ["cache_lookup", "cache_replay"]
+                node_start_ts["cache_replay"] = time.perf_counter() * 1000
+                yield StreamEvent(event="node_start", data="cache_replay")
+                for ev in cache_service.replay(cache_entry, cache_path):
                     yield ev
+                node_timings["cache_replay"] = round(
+                    time.perf_counter() * 1000 - node_start_ts.pop("cache_replay"), 1
+                )
+                node_data = {
+                    "cache_lookup": cache_lookup_data,
+                    "cache_replay": {
+                        "input": {
+                            "query": request.query,
+                        },
+                        "output": {
+                            "answer_length": len(cache_entry["answer"]),
+                            "hit_count": cache_entry["hit_count"],
+                            "original_path": cache_entry["agent_path"],
+                        },
+                        "durationMs": node_timings["cache_replay"],
+                    },
+                }
+                yield StreamEvent(
+                    event="node_data",
+                    data=json.dumps(node_data, ensure_ascii=False),
+                )
+                yield StreamEvent(event="node_step", data="cache_replay")
                 memory_manager.add_interaction(
                     request.session_id, request.query, cache_entry["answer"],
                 )
@@ -111,10 +167,6 @@ class RAGService:
         LINEAR_NEXT: dict[str, str] = {
             "parallel_retrieve_merge": "rerank_documents",
         }
-
-        # 每节点执行耗时追踪（毫秒）
-        node_start_ts: dict[str, float] = {}
-        node_timings: dict[str, float] = {}
 
         # 图入口第一个节点一开始就算活跃
         node_start_ts["analyze_kg_intent"] = time.perf_counter() * 1000
@@ -225,15 +277,11 @@ class RAGService:
             data=json.dumps([s.model_dump() for s in sources], ensure_ascii=False),
         )
 
-        # 发送 Agent 路径
-        yield StreamEvent(
-            event="path",
-            data=json.dumps(agent_path, ensure_ascii=False),
-        )
-
         # 从 state 读取图内生成结果（generate_simple/complex 已产出 answer）
         answer = result.get("answer", "")
         has_docs = bool(documents)
+        hallucination_passed = True
+        hallucination_faithfulness = 100.0
 
         # 确定实际执行的生成节点 ID
         generate_node_id = "generate_simple"
@@ -253,8 +301,6 @@ class RAGService:
                 node_data[generate_node_id]["durationMs"] = node_timings[generate_node_id]
 
             # 幻觉检测（自反思开启时）
-            hallucination_passed = True
-            hallucination_faithfulness = 100.0
             if request.enable_reflection:
                 node_start_ts["check_hallucination"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="check_hallucination")
@@ -284,32 +330,6 @@ class RAGService:
             memory_manager.add_interaction(request.session_id, request.query, answer)
             logger.info("[stream_rag] 流式生成完成: answer_len=%d, node=%s",
                          len(answer), generate_node_id)
-
-            # ── 写回多级缓存（仅成功答案；反射开启时需幻觉检测通过） ──
-            if request.use_cache and answer and answer != "未找到相关文档。":
-                can_cache = (not request.enable_reflection) or hallucination_passed
-                if can_cache:
-                    try:
-                        get_cache_service().store(
-                            query=request.query,
-                            signature=build_config_signature(request),
-                            vector=query_embedding,
-                            answer=answer,
-                            sources=[s.model_dump() for s in sources],
-                            agent_path=agent_path,
-                            citations=result.get("citation_metadata", {}),
-                            hallucination=(
-                                {
-                                    "passed": hallucination_passed,
-                                    "result": "PASSED" if hallucination_passed else "FAILED",
-                                    "faithfulness": hallucination_faithfulness,
-                                }
-                                if request.enable_reflection
-                                else None
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning("[stream_rag] 缓存写回失败: %s", e)
         else:
             # 图内生成未产出答案 → 降级兜底
             if not answer:
@@ -320,6 +340,68 @@ class RAGService:
                 node_data[generate_node_id]["durationMs"] = node_timings[generate_node_id]
             memory_manager.add_interaction(request.session_id, request.query, answer)
             logger.info("[stream_rag] 无文档，返回兜底回答")
+
+        # ── cache_store 虚拟节点：写回多级缓存 ──
+        # 反射开启时仅幻觉检测通过才写入；答案为空/兜底/缓存关闭时不写
+        if request.use_cache:
+            signature = build_config_signature(request)
+            node_start_ts["cache_store"] = time.perf_counter() * 1000
+            yield StreamEvent(event="node_start", data="cache_store")
+            store_result: dict = {"written": False, "reason": ""}
+            if not settings.cache_enabled:
+                store_result["reason"] = "缓存功能已关闭"
+            elif not answer or answer == "未找到相关文档。":
+                store_result["reason"] = "答案为空或为兜底回答，不缓存"
+            elif request.enable_reflection and not hallucination_passed:
+                store_result["reason"] = "幻觉检测未通过，不缓存"
+            else:
+                try:
+                    get_cache_service().store(
+                        query=request.query,
+                        signature=signature,
+                        vector=query_embedding,
+                        answer=answer,
+                        sources=[s.model_dump() for s in sources],
+                        agent_path=agent_path,
+                        citations=result.get("citation_metadata", {}),
+                        hallucination=(
+                            {
+                                "passed": hallucination_passed,
+                                "result": "PASSED" if hallucination_passed else "FAILED",
+                                "faithfulness": hallucination_faithfulness,
+                            }
+                            if request.enable_reflection
+                            else None
+                        ),
+                    )
+                    store_result["written"] = True
+                    store_result["reason"] = "已写入缓存"
+                except Exception as e:
+                    logger.warning("[stream_rag] 缓存写回失败: %s", e)
+                    store_result["reason"] = f"写回异常: {e}"
+            node_timings["cache_store"] = round(
+                time.perf_counter() * 1000 - node_start_ts.pop("cache_store"), 1
+            )
+            node_data["cache_store"] = {
+                "input": {
+                    "query": request.query,
+                    "config_signature": signature,
+                },
+                "output": store_result,
+                "durationMs": node_timings["cache_store"],
+            }
+            yield StreamEvent(event="node_step", data="cache_store")
+            agent_path.append("cache_store")
+
+        # 合并 cache_lookup 虚拟节点数据
+        if cache_lookup_data:
+            node_data["cache_lookup"] = cache_lookup_data
+
+        # 发送 Agent 路径（含缓存节点；在 cache_store 完成后发出，保证路径一致）
+        yield StreamEvent(
+            event="path",
+            data=json.dumps(agent_path, ensure_ascii=False),
+        )
 
         # 发送节点 I/O 数据（前端流程图点击展示）
         yield StreamEvent(
@@ -446,17 +528,25 @@ class RAGService:
 
         # ── 重排序 ──
         if request.enable_rerank:
+            rerank_output: dict = {
+                "reranked_count": len(docs),
+                "result": f"已按相关性对 {len(docs)} 份文档重新排序",
+                "documents": [RAGService._doc_detail(d) for d in docs],
+            }
+            degraded = result.get("rerank_degraded")
+            if degraded:
+                rerank_output["degraded"] = True
+                rerank_output["degraded_reason"] = degraded
+                rerank_output["result"] = (
+                    f"重排序接口异常，已降级为原始排序（{degraded}）"
+                )
             data["rerank_documents"] = {
                 "input": {
-                    "method": "Cohere Rerank 重排序",
+                    "method": "百炼 TextReRank 重排序",
                     "documents_count": len(docs),
                     "documents": [RAGService._doc_detail(d) for d in docs],
                 },
-                "output": {
-                    "reranked_count": len(docs),
-                    "result": f"已按相关性对 {len(docs)} 份文档重新排序",
-                    "documents": [RAGService._doc_detail(d) for d in docs],
-                },
+                "output": rerank_output,
             }
 
         # ── 文档评估 ──

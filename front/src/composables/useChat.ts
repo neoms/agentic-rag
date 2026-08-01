@@ -368,14 +368,16 @@ export function useChat() {
               break
             case 'done':
               messages.value[msgIndex].isStreaming = false
+              // 缓存命中时本次只走 cache_lookup → cache_replay，主链并未执行
+              const isCacheHit = streamAgentPath.value.includes('cache_replay')
               // generate_simple/complex 是图内节点，node_step 已由 updates 模式在
               // astream 循环中发出。仅当意外缺失时，根据 agent_path 补全实际执行的节点
               const genNode = streamAgentPath.value.find(p => p.startsWith('generate_'))
               if (genNode && !flow.completedNodes.value.includes(genNode)) {
                 flow.completedNodes.value = [...flow.completedNodes.value, genNode]
               }
-              // check_hallucination 仅在自反思开启且实际运行时补回
-              if (enableReflection.value && !flow.completedNodes.value.includes('check_hallucination')) {
+              // check_hallucination 仅在自反思开启且实际运行时补回（缓存命中时跳过）
+              if (enableReflection.value && !isCacheHit && !flow.completedNodes.value.includes('check_hallucination')) {
                 flow.completedNodes.value = [...flow.completedNodes.value, 'check_hallucination']
               }
               flow.currentNode.value = null
