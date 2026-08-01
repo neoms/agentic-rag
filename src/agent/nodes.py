@@ -455,8 +455,10 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
     # 各策略独立耗时（毫秒）
     strategy_timings_ms: dict[str, float] = {}
 
-    # ── 1. 预计算 query embedding（仅一次 API 调用） ──
-    query_embedding = get_embedding_client().embed_query(query)
+    # ── 1. 预计算 query embedding（仅一次 API 调用；缓存层已计算时直接复用） ──
+    query_embedding = state.get("query_embedding")
+    if not query_embedding:
+        query_embedding = get_embedding_client().embed_query(query)
 
     # 语义检索（复用已计算的 embedding）
     semantic_results = vector_store.search_by_embedding(

@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # ========== 重排序 ==========
     rerank_enabled: bool = True
-    rerank_model: str = "gte-rerank"  # 百炼文本重排序模型
+    rerank_model: str = "gte-rerank-v2"  # 百炼文本重排序模型
     rerank_top_k: int = 5  # 重排序后保留的文档数
 
     # ========== 文档评估（grade_documents score 预筛） ==========
@@ -100,6 +100,15 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 
+    # ========== 多级缓存（精准 + 语义） ==========
+    cache_enabled: bool = True
+    cache_exact_enabled: bool = True
+    cache_semantic_enabled: bool = True
+    cache_semantic_threshold: float = 0.92   # 语义缓存命中阈值（余弦相似度）
+    cache_max_entries: int = 5000            # 缓存条目上限（LRU 淘汰）
+    cache_ttl_seconds: int = 0               # 0 = 不过期（仅按 LRU 淘汰）
+    cache_db_path: str = "data/cache/cache.db"
+
     @property
     def allowed_extensions_list(self) -> list[str]:
         return [ext.strip().lower() for ext in self.allowed_extensions.split(",")]
@@ -111,6 +120,13 @@ class Settings(BaseSettings):
     @property
     def chroma_persist_dir_path(self) -> Path:
         p = Path(self.chroma_persist_dir)
+        if not p.is_absolute():
+            p = self.project_root / p
+        return p
+
+    @property
+    def cache_db_path_abs(self) -> Path:
+        p = Path(self.cache_db_path)
         if not p.is_absolute():
             p = self.project_root / p
         return p

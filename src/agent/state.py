@@ -21,6 +21,9 @@ class AgentState(TypedDict):
     # 用户原始问题
     query: str
 
+    # 预计算的问题向量（由缓存层计算后传入，检索节点复用，避免重复调用 Embedding API）
+    query_embedding: list[float] | None
+
     # 当前会话 ID
     session_id: str
 

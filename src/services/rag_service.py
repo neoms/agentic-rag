@@ -23,6 +23,8 @@ from src.models.chat import (
     StreamEvent,
 )
 from src.memory.manager import memory_manager
+from src.cache import get_cache_service
+from src.cache.service import build_config_signature
 from src.services.generator import (
     build_generate_node_data,
     build_hallucination_node_data,
@@ -43,8 +45,29 @@ class RAGService:
         logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
                      request.session_id, request.query[:80], request.enable_web_search)
 
+        # ── 多级缓存（精准 + 语义）：命中直接回放，未命中复用问题向量 ──
+        query_embedding: list[float] | None = None
+        if request.use_cache:
+            cache_service = get_cache_service()
+            cache_entry, query_embedding = cache_service.lookup(
+                request.query,
+                build_config_signature(request),
+            )
+            if cache_entry is not None:
+                logger.info("[stream_rag] 缓存命中: session=%s, query='%s'",
+                            request.session_id, request.query[:80])
+                for ev in cache_service.replay(cache_entry):
+                    yield ev
+                memory_manager.add_interaction(
+                    request.session_id, request.query, cache_entry["answer"],
+                )
+                logger.info("[stream_rag] 缓存回放完成: answer_len=%d, elapsed=%.2fs",
+                            len(cache_entry["answer"]), time.time() - t0)
+                return
+
         initial_state: AgentState = {
             "query": request.query,
+            "query_embedding": query_embedding,
             "session_id": request.session_id,
             "messages": [],
             "documents": [],
@@ -261,6 +284,32 @@ class RAGService:
             memory_manager.add_interaction(request.session_id, request.query, answer)
             logger.info("[stream_rag] 流式生成完成: answer_len=%d, node=%s",
                          len(answer), generate_node_id)
+
+            # ── 写回多级缓存（仅成功答案；反射开启时需幻觉检测通过） ──
+            if request.use_cache and answer and answer != "未找到相关文档。":
+                can_cache = (not request.enable_reflection) or hallucination_passed
+                if can_cache:
+                    try:
+                        get_cache_service().store(
+                            query=request.query,
+                            signature=build_config_signature(request),
+                            vector=query_embedding,
+                            answer=answer,
+                            sources=[s.model_dump() for s in sources],
+                            agent_path=agent_path,
+                            citations=result.get("citation_metadata", {}),
+                            hallucination=(
+                                {
+                                    "passed": hallucination_passed,
+                                    "result": "PASSED" if hallucination_passed else "FAILED",
+                                    "faithfulness": hallucination_faithfulness,
+                                }
+                                if request.enable_reflection
+                                else None
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning("[stream_rag] 缓存写回失败: %s", e)
         else:
             # 图内生成未产出答案 → 降级兜底
             if not answer:

@@ -7,6 +7,7 @@ class AgenticChatRequest(BaseModel):
     """流式 Agent 对话请求"""
     query: str = Field(..., min_length=1, description="用户问题")
     session_id: str = Field(default="default", description="会话 ID")
+    use_cache: bool = True  # 是否启用多级缓存（评估/调试时可绕过）
     enable_web_search: bool = False
     enable_reflection: bool = True
     enable_rerank: bool = True
