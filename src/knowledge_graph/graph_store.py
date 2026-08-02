@@ -6,6 +6,8 @@ Kuzu 自动持久化到磁盘，无需手动 save/load。
 
 import json
 import logging
+import functools
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,17 @@ import kuzu
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _write_locked(method):
+    """将 GraphStore 写操作串行化（Kuzu 单写者，多连接并发写会冲突）"""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._write_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class GraphView:
@@ -81,8 +94,21 @@ class GraphStore:
         self._db_path = str(self.data_dir / "kuzu_db")
         self._db = kuzu.Database(self._db_path)
         self._conn = kuzu.Connection(self._db)
+        # 每线程独立连接（Kuzu Connection 非线程安全）；主线程复用初始连接
+        self._local = threading.local()
+        self._local.conn = self._conn
+        # 写锁：Kuzu 同一时刻仅允许一个写事务
+        self._write_lock = threading.RLock()
         self._init_schema()
         self._init_time = self._db_path_stat_mtime()
+
+    def _get_conn(self):
+        """获取当前线程的 Kuzu 连接（懒创建，线程隔离）"""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = kuzu.Connection(self._db)
+            self._local.conn = conn
+        return conn
 
     def _db_path_stat_mtime(self) -> float:
         """返回 Kuzu 数据库文件的最后修改时间"""
@@ -95,7 +121,7 @@ class GraphStore:
 
     def _init_schema(self) -> None:
         """初始化 Kuzu 表结构（幂等）"""
-        self._conn.execute("""
+        self._get_conn().execute("""
             CREATE NODE TABLE IF NOT EXISTS Entity (
                 name STRING,
                 type STRING DEFAULT 'unknown',
@@ -105,7 +131,7 @@ class GraphStore:
                 PRIMARY KEY (name)
             )
         """)
-        self._conn.execute("""
+        self._get_conn().execute("""
             CREATE REL TABLE IF NOT EXISTS Relation (
                 FROM Entity TO Entity,
                 relation STRING DEFAULT 'related_to',
@@ -119,12 +145,12 @@ class GraphStore:
 
     @property
     def node_count(self) -> int:
-        result = self._conn.execute("MATCH (e:Entity) RETURN count(*) AS cnt")
+        result = self._get_conn().execute("MATCH (e:Entity) RETURN count(*) AS cnt")
         return result.get_next()[0]
 
     @property
     def edge_count(self) -> int:
-        result = self._conn.execute("MATCH ()-[r:Relation]->() RETURN count(*) AS cnt")
+        result = self._get_conn().execute("MATCH ()-[r:Relation]->() RETURN count(*) AS cnt")
         return result.get_next()[0]
 
     def is_empty(self) -> bool:
@@ -132,6 +158,7 @@ class GraphStore:
 
     # ── 实体操作 ──────────────────────────────────────────
 
+    @_write_locked
     def add_entity(
         self,
         name: str,
@@ -156,7 +183,7 @@ class GraphStore:
         metadata = metadata or {}
         meta_json = json.dumps(metadata, ensure_ascii=False)
 
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             "MATCH (e:Entity) WHERE e.name = $name RETURN e.type, e.doc_ids, e.aliases, e.metadata",
             {"name": name},
         )
@@ -187,7 +214,7 @@ class GraphStore:
             merged_meta: dict[str, Any] = json.loads(existing_meta or "{}")
             merged_meta.update(metadata)
 
-            self._conn.execute(
+            self._get_conn().execute(
                 """
                 MATCH (e:Entity) WHERE e.name = $name
                 SET e.type = $type, e.doc_ids = $doc_ids,
@@ -202,7 +229,7 @@ class GraphStore:
                 },
             )
         else:
-            self._conn.execute(
+            self._get_conn().execute(
                 """
                 CREATE (e:Entity {
                     name: $name, type: $type, doc_ids: $doc_ids,
@@ -220,6 +247,7 @@ class GraphStore:
 
     # ── 关系操作 ──────────────────────────────────────────
 
+    @_write_locked
     def add_relation(
         self,
         source: str,
@@ -246,7 +274,7 @@ class GraphStore:
         meta_json = json.dumps(metadata, ensure_ascii=False)
         new_doc_ids = [doc_id] if doc_id else []
 
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             """
             MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity {name: $dst})
             RETURN r.doc_ids, r.relation, r.weight, r.metadata
@@ -266,7 +294,7 @@ class GraphStore:
             merged_meta: dict[str, Any] = json.loads(existing_meta or "{}")
             merged_meta.update(metadata)
 
-            self._conn.execute(
+            self._get_conn().execute(
                 """
                 MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity {name: $dst})
                 SET r.relation = $rel, r.weight = $weight,
@@ -282,7 +310,7 @@ class GraphStore:
                 },
             )
         else:
-            self._conn.execute(
+            self._get_conn().execute(
                 """
                 MATCH (s:Entity {name: $src}), (t:Entity {name: $dst})
                 CREATE (s)-[r:Relation {
@@ -302,6 +330,7 @@ class GraphStore:
 
     # ── 删除操作 ──────────────────────────────────────────
 
+    @_write_locked
     def remove_doc_id(self, doc_id: str) -> tuple[int, int]:
         """从图谱中移除指定文档的所有实体和关系引用
 
@@ -329,7 +358,7 @@ class GraphStore:
         safe_id = doc_id.replace("'", "''")
 
         # ---- 第一轮：处理边 ----
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             f"""
             MATCH (s:Entity)-[r:Relation]->(t:Entity)
             WHERE '{safe_id}' IN r.doc_ids
@@ -349,19 +378,19 @@ class GraphStore:
                 relations_to_delete.append((src, dst))
 
         for src, dst, new_ids in relations_to_update:
-            self._conn.execute(
+            self._get_conn().execute(
                 "MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity {name: $dst}) SET r.doc_ids = $doc_ids",
                 {"src": src, "dst": dst, "doc_ids": new_ids},
             )
 
         for src, dst in relations_to_delete:
-            self._conn.execute(
+            self._get_conn().execute(
                 "MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity {name: $dst}) DELETE r",
                 {"src": src, "dst": dst},
             )
 
         # ---- 第二轮：处理节点 ----
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             f"""
             MATCH (e:Entity)
             WHERE '{safe_id}' IN e.doc_ids
@@ -381,7 +410,7 @@ class GraphStore:
                 entities_to_delete.append(name)
 
         for name, new_ids in entities_to_update:
-            self._conn.execute(
+            self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) SET e.doc_ids = $doc_ids",
                 {"name": name, "doc_ids": new_ids},
             )
@@ -389,14 +418,14 @@ class GraphStore:
         # 统计级联删除的边（删除节点前先计数）
         cascaded_relations = 0
         for name in entities_to_delete:
-            count_result = self._conn.execute(
+            count_result = self._get_conn().execute(
                 "MATCH (e:Entity {name: $name})-[r:Relation]-() RETURN count(*) AS cnt",
                 {"name": name},
             )
             cascaded_relations += count_result.get_next()[0]
 
         for name in entities_to_delete:
-            self._conn.execute(
+            self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) DELETE e",
                 {"name": name},
             )
@@ -411,6 +440,7 @@ class GraphStore:
 
     # ── 批量导入 ──────────────────────────────────────────
 
+    @_write_locked
     def bulk_import(
         self,
         doc_id: str,
@@ -456,14 +486,14 @@ class GraphStore:
             if not src or not dst:
                 continue
             # 自动补齐缺失的关系端节点
-            src_result = self._conn.execute(
+            src_result = self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) RETURN count(*) AS cnt",
                 {"name": src},
             )
             if src_result.get_next()[0] == 0:
                 self._add_entity_impl(name=src, entity_type="unknown", doc_id=doc_id)
 
-            dst_result = self._conn.execute(
+            dst_result = self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) RETURN count(*) AS cnt",
                 {"name": dst},
             )
@@ -487,7 +517,7 @@ class GraphStore:
         Returns:
             {实体名: [邻居实体名列表]}，包含实体本身
         """
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             "MATCH (e:Entity {name: $name}) RETURN count(*) AS cnt",
             {"name": entity_name},
         )
@@ -503,7 +533,7 @@ class GraphStore:
             next_frontier: set[str] = set()
             # 逐跳查询，避免 Kuzu 可变长度路径的性能陷阱
             for f_node in frontier:
-                hop_result = self._conn.execute(
+                hop_result = self._get_conn().execute(
                     """
                     MATCH (e:Entity {name: $name})-[r:Relation]-(n:Entity)
                     RETURN DISTINCT n.name
@@ -520,7 +550,7 @@ class GraphStore:
         # 为每个节点收集邻居
         result_dict: dict[str, list[str]] = {}
         for n in nodes:
-            nb_result = self._conn.execute(
+            nb_result = self._get_conn().execute(
                 """
                 MATCH (e:Entity {name: $name})-[r:Relation]-(n:Entity)
                 RETURN DISTINCT n.name
@@ -551,7 +581,7 @@ class GraphStore:
 
         nodes: set[str] = set()
         for name in entity_names:
-            result = self._conn.execute(
+            result = self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) RETURN e.name, e.type, e.aliases, e.metadata",
                 {"name": name},
             )
@@ -567,7 +597,7 @@ class GraphStore:
                 break
             next_frontier: set[str] = set()
             for f_node in frontier:
-                hop_result = self._conn.execute(
+                hop_result = self._get_conn().execute(
                     """
                     MATCH (e:Entity {name: $name})-[r:Relation]-(n:Entity)
                     RETURN DISTINCT n.name
@@ -584,7 +614,7 @@ class GraphStore:
         # 获取所有节点的属性
         node_data: dict[str, dict[str, Any]] = {}
         for name in nodes:
-            n_result = self._conn.execute(
+            n_result = self._get_conn().execute(
                 "MATCH (e:Entity {name: $name}) RETURN e.type, e.doc_ids, e.aliases, e.metadata",
                 {"name": name},
             )
@@ -601,7 +631,7 @@ class GraphStore:
         node_list = list(nodes)
         edge_data: list[tuple[str, str, dict[str, Any]]] = []
         for src_name in node_list:
-            e_result = self._conn.execute(
+            e_result = self._get_conn().execute(
                 """
                 MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity)
                 WHERE t.name IN $targets
@@ -627,7 +657,7 @@ class GraphStore:
         self, source: str, target: str
     ) -> dict[str, Any] | None:
         """获取两点间的关系边数据"""
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             """
             MATCH (s:Entity {name: $src})-[r:Relation]->(t:Entity {name: $dst})
             RETURN r.relation, r.weight, r.doc_ids, r.metadata
@@ -652,11 +682,11 @@ class GraphStore:
         使用 BFS 逐层扩展，避免 Kuzu 可变长度路径的性能问题。
         """
         # 确认两个节点都存在
-        s_result = self._conn.execute(
+        s_result = self._get_conn().execute(
             "MATCH (e:Entity {name: $name}) RETURN count(*) AS cnt",
             {"name": source},
         )
-        t_result = self._conn.execute(
+        t_result = self._get_conn().execute(
             "MATCH (e:Entity {name: $name}) RETURN count(*) AS cnt",
             {"name": target},
         )
@@ -683,7 +713,7 @@ class GraphStore:
                 visited.add(current)
 
             # 获取邻居
-            nb_result = self._conn.execute(
+            nb_result = self._get_conn().execute(
                 """
                 MATCH (e:Entity {name: $name})-[r:Relation]-(n:Entity)
                 RETURN DISTINCT n.name
@@ -711,7 +741,7 @@ class GraphStore:
         query_lower = query.lower()
 
         # 获取全部实体（小数据集，直接全量遍历）
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             "MATCH (e:Entity) RETURN e.name, e.aliases, e.type",
         )
 
@@ -750,7 +780,7 @@ class GraphStore:
 
     def get_all_entities(self) -> list[dict]:
         """获取所有实体信息"""
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             "MATCH (e:Entity) RETURN e.name, e.type, e.doc_ids, e.aliases, e.metadata",
         )
         entities: list[dict] = []
@@ -767,7 +797,7 @@ class GraphStore:
 
     def get_all_relations(self) -> list[dict]:
         """获取所有关系信息"""
-        result = self._conn.execute(
+        result = self._get_conn().execute(
             """
             MATCH (s:Entity)-[r:Relation]->(t:Entity)
             RETURN s.name, t.name, r.relation, r.weight, r.doc_ids, r.metadata

@@ -98,7 +98,7 @@ npm run build     # 构建生产包到 front/dist/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/health` | 健康检查（服务状态、LLM/Embedding 型号、文档数） |
+| GET | `/health` | 健康检查（逐组件明细；`?deep=true` 额外做 Embedding 探针） |
 | POST | `/api/v1/documents/upload` | 上传文档（PDF/MD/TXT，最大 10MB） |
 | GET | `/api/v1/documents` | 列出已索引文档 |
 | DELETE | `/api/v1/documents/{doc_id}` | 删除文档及其向量块 |
