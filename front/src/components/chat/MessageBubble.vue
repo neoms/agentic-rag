@@ -10,25 +10,63 @@ const props = defineProps<{
 // 活跃的引用弹出信息
 const activeCitationKey = ref<string | null>(null)
 
-// 解析消息内容，将 [N] 替换为可点击的 <sup> 标记
-const renderedContent = computed(() => {
-  const content = props.message.content
-  if (!content) return ''
+// 引文标记（单个 [N]）
+interface CitationMarker {
+  num: string
+  filename: string
+  hasInfo: boolean
+}
 
-  // 匹配 [N] 或 [N, M] 格式的引用标记（N, M 为段落顺序号）
-  return content.replace(
-    /\[(\d+(?:\s*,\s*\d+)*)\]/g,
-    (match, numGroup: string) => {
-      const nums = numGroup.split(',').map((k: string) => k.trim())
-      const badges = nums.map((num: string) => {
-        const info = props.message.citations?.[num]
-        const filename = info?.filename ?? `来源 #${num}`
-        const cls = `citation-marker${info ? ' has-info' : ''}`
-        return `<sup class="${cls}" data-citation="${num}" title="${filename}">[${num}]</sup>`
+// 内容分段：纯文本段 或 引文标记段
+interface ContentSegment {
+  type: 'text' | 'citation'
+  text?: string
+  markers?: CitationMarker[]
+}
+
+// 匹配 [N] 或 [N, M] 格式的引用标记（N, M 为段落顺序号）
+const CITATION_PATTERN = /\[(\d+(?:\s*,\s*\d+)*)\]/g
+
+// 将消息内容解析为「纯文本 + 引文标记」分段，模板用 Vue 绑定渲染（自动转义，无 innerHTML，杜绝 XSS）
+const contentSegments = computed<ContentSegment[]>(() => {
+  const content = props.message.content
+  if (!content) return []
+
+  const segments: ContentSegment[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  CITATION_PATTERN.lastIndex = 0
+  while ((match = CITATION_PATTERN.exec(content)) !== null) {
+    // 引文标记前的纯文本段
+    if (match.index > lastIndex) {
+      segments.push({
+        type: 'text',
+        text: content.slice(lastIndex, match.index),
       })
-      return badges.join('')
     }
-  )
+
+    // 引文标记段（[N] 或 [N, M] → 多个 <sup>）
+    const nums = match[1].split(',').map((k: string) => k.trim())
+    const markers: CitationMarker[] = nums.map((num) => {
+      const info = props.message.citations?.[num]
+      return {
+        num,
+        filename: info?.filename ?? `来源 #${num}`,
+        hasInfo: Boolean(info),
+      }
+    })
+    segments.push({ type: 'citation', markers })
+
+    lastIndex = match.index + match[0].length
+  }
+
+  // 末尾剩余纯文本
+  if (lastIndex < content.length) {
+    segments.push({ type: 'text', text: content.slice(lastIndex) })
+  }
+
+  return segments
 })
 
 // 获取当前悬停的引文信息
@@ -83,8 +121,21 @@ function handleContentClick(event: MouseEvent) {
     >
       <!-- AI 消息：渲染带引文标注的内容 -->
       <div v-if="message.role === 'assistant'" class="message-content">
-        <!-- 使用 v-html 渲染带 <sup> 标记的内容 -->
-        <span v-html="renderedContent" class="whitespace-pre-wrap break-words" @click.stop="handleContentClick" />
+        <!-- Vue 绑定渲染（自动转义），不再使用 v-html -->
+        <span class="whitespace-pre-wrap break-words" @click.stop="handleContentClick">
+          <template v-for="(seg, i) in contentSegments" :key="i">
+            <template v-if="seg.type === 'citation'">
+              <sup
+                v-for="marker in seg.markers"
+                :key="`${i}-${marker.num}`"
+                :class="['citation-marker', { 'has-info': marker.hasInfo }]"
+                :data-citation="marker.num"
+                :title="marker.filename"
+              >[{{ marker.num }}]</sup>
+            </template>
+            <template v-else>{{ seg.text }}</template>
+          </template>
+        </span>
         <!-- 流式输出光标 -->
         <span
           v-if="message.isStreaming"
