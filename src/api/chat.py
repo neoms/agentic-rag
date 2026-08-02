@@ -35,9 +35,17 @@ async def stream_chat(
                 # 手动构造 SSE 格式确保即时发送
                 line = f"event: {event.event}\ndata: {event.data}\n\n"
                 yield line.encode("utf-8")
-        except Exception as e:
+        except Exception:
             logger.exception("流式对话失败")
-            err_line = f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
+            err_line = (
+                "event: error\n"
+                "data: "
+                + json.dumps(
+                    {"detail": "生成回答时发生内部错误，请稍后重试"},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
             yield err_line.encode("utf-8")
 
     return StreamingResponse(

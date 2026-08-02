@@ -59,7 +59,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("未处理的异常: %s", exc)
     return JSONResponse(
         status_code=500,
-        content=ErrorResponse(detail=str(exc), error_code="INTERNAL_ERROR").model_dump(),
+        content=ErrorResponse(detail="服务器内部错误", error_code="INTERNAL_ERROR").model_dump(),
     )
 
 
