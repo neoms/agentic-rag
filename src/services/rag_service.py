@@ -77,6 +77,13 @@ class RAGService:
                     "cache_type": cache_info.get("cache_type", "none"),
                     "similarity": cache_info.get("similarity"),
                     "hit_count": cache_entry["hit_count"] if cache_entry else None,
+                    # 前端拆分为「精准缓存」「语义缓存」两个节点所需的分层状态
+                    "exact_checked": cache_info.get("exact_checked", False),
+                    "exact_hit": cache_info.get("exact_hit", False),
+                    "exact_ms": cache_info.get("exact_ms"),
+                    "semantic_checked": cache_info.get("semantic_checked", False),
+                    "semantic_hit": cache_info.get("semantic_hit", False),
+                    "semantic_ms": cache_info.get("semantic_ms"),
                 },
                 "durationMs": node_timings["cache_lookup"],
             }
@@ -95,6 +102,21 @@ class RAGService:
                 node_timings["cache_replay"] = round(
                     time.perf_counter() * 1000 - node_start_ts.pop("cache_replay"), 1
                 )
+                # 语义命中后把当前问法写回精准缓存：同文本下次提问可直接精准命中
+                if cache_info.get("cache_type") == "semantic" and query_embedding:
+                    try:
+                        cache_service.store(
+                            query=request.query,
+                            signature=signature,
+                            vector=query_embedding,
+                            answer=cache_entry["answer"],
+                            sources=cache_entry["sources"],
+                            agent_path=cache_entry["agent_path"],
+                            citations=cache_entry["citations"],
+                            hallucination=cache_entry["hallucination"],
+                        )
+                    except Exception as e:
+                        logger.warning("[stream_rag] 语义命中写回失败: %s", e)
                 node_data = {
                     "cache_lookup": cache_lookup_data,
                     "cache_replay": {
@@ -114,6 +136,7 @@ class RAGService:
                     data=json.dumps(node_data, ensure_ascii=False),
                 )
                 yield StreamEvent(event="node_step", data="cache_replay")
+                yield StreamEvent(event="done", data="")
                 memory_manager.add_interaction(
                     request.session_id, request.query, cache_entry["answer"],
                 )

@@ -10,6 +10,7 @@
 import hashlib
 import json
 import logging
+import time
 import unicodedata
 
 from src.cache.storage import CacheStorage
@@ -82,12 +83,21 @@ class CacheService:
             (命中条目, 问题向量, 查询信息)
             - 命中：条目非 None，向量为 None
             - 未命中：条目为 None；若语义层已计算向量则返回该向量供检索复用
-            - 查询信息: {cache_type: exact|semantic|none, similarity, query_norm}
+            - 语义命中：条目非 None，且向量非 None（供写回精准缓存复用）
+            - 查询信息: {cache_type, similarity, query_norm, exact_checked,
+              exact_hit, exact_ms, semantic_checked, semantic_hit, semantic_ms}
+              （供前端分别展示两层状态与耗时）
         """
         info: dict = {
             "cache_type": "none",
             "similarity": None,
             "query_norm": normalize_query(query),
+            "exact_checked": False,
+            "exact_hit": False,
+            "exact_ms": None,
+            "semantic_checked": False,
+            "semantic_hit": False,
+            "semantic_ms": None,
         }
         if not settings.cache_enabled:
             return None, None, info
@@ -95,10 +105,14 @@ class CacheService:
 
         # ── 第 1 层：精准缓存 ──
         if settings.cache_exact_enabled:
+            info["exact_checked"] = True
+            t_exact = time.perf_counter()
             entry = self._storage.get_exact(query_norm, signature)
+            info["exact_ms"] = round((time.perf_counter() - t_exact) * 1000, 1)
             if entry is not None:
                 info["cache_type"] = "exact"
                 info["similarity"] = 1.0
+                info["exact_hit"] = True
                 logger.info("[cache] 精准命中: norm='%s', hit_count=%d",
                             query_norm, entry["hit_count"])
                 return entry, None, info
@@ -106,11 +120,13 @@ class CacheService:
         # ── 第 2 层：语义缓存（需要问题向量） ──
         if not settings.cache_semantic_enabled:
             return None, None, info
+        t_semantic = time.perf_counter()
         try:
             from src.backend.embedding import get_embedding_client
             vector = get_embedding_client().embed_query(query)
         except Exception as e:
             logger.warning("[cache] 语义向量计算失败，跳过语义层: %s", e)
+            info["semantic_ms"] = round((time.perf_counter() - t_semantic) * 1000, 1)
             return None, None, info
 
         candidates = self._storage.semantic_search(
@@ -119,15 +135,18 @@ class CacheService:
             top_k=1,
             min_similarity=settings.cache_semantic_threshold,
         )
+        info["semantic_checked"] = True
+        info["semantic_ms"] = round((time.perf_counter() - t_semantic) * 1000, 1)
         if candidates:
             best = candidates[0]
             info["similarity"] = best["similarity"]
             entry = self._storage.get_by_id(best["id"])
             if entry is not None:
                 info["cache_type"] = "semantic"
+                info["semantic_hit"] = True
                 logger.info("[cache] 语义命中: sim=%.4f, hit_count=%d",
                             best["similarity"], entry["hit_count"])
-                return entry, None, info
+                return entry, vector, info
             logger.info("[cache] 语义候选命中但条目已失效: id=%d", best["id"])
 
         best_sim = (
