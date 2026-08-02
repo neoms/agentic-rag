@@ -5,7 +5,6 @@ import type { UIMessage } from '../../types'
 import MessageBubble from './MessageBubble.vue'
 import ChatInput from './ChatInput.vue'
 import SourcePanel from './SourcePanel.vue'
-import AgentPathBadge from './AgentPathBadge.vue'
 
 const props = defineProps<{
   messages: UIMessage[]
@@ -91,13 +90,6 @@ function handleSend(query: string) {
       <!-- 消息列表 -->
       <template v-for="msg in messages" :key="msg.id">
         <MessageBubble :message="msg" />
-
-        <!-- Agent 路径可视化 -->
-        <AgentPathBadge
-          v-if="msg.agent_path && msg.agent_path.length > 0 && msg.role === 'assistant'"
-          :path="msg.agent_path"
-          :reflectionCount="msg.reflection_count ?? 0"
-        />
 
         <!-- 幻觉检测结果（含忠实度分数） -->
         <div

@@ -113,8 +113,6 @@ export interface UIMessage {
   content: string
   timestamp: number
   sources?: SourceDocument[]
-  agent_path?: string[]
-  reflection_count?: number
   tool_calls?: Record<string, string | number | boolean>[]
   isStreaming?: boolean
   hallucination_passed?: boolean
