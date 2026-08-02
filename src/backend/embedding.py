@@ -10,6 +10,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_community.embeddings.dashscope import embed_with_retry
 
 from src.config.settings import settings
+from src.metrics import embedding_calls_total
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class TimeoutAwareDashScopeEmbeddings(DashScopeEmbeddings):
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """注入 request_timeout 到 embedding API 调用"""
+        embedding_calls_total.inc()
         embeddings = embed_with_retry(
             self,
             input=texts,
@@ -39,6 +41,7 @@ class TimeoutAwareDashScopeEmbeddings(DashScopeEmbeddings):
 
     def embed_query(self, text: str) -> List[float]:
         """注入 request_timeout 到 query embedding API 调用"""
+        embedding_calls_total.inc()
         embedding = embed_with_retry(
             self,
             input=text,

@@ -28,6 +28,11 @@ from src.models.chat import (
 from src.memory.manager import memory_manager
 from src.cache import get_cache_service
 from src.cache.service import build_config_signature
+from src.metrics import (
+    chat_requests_total,
+    chat_cache_hit_total,
+    chat_stream_duration_seconds,
+)
 from src.services.generator import (
     build_generate_node_data,
     build_hallucination_node_data,
@@ -47,6 +52,7 @@ class RAGService:
         t0 = time.time()
         logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
                      request.session_id, request.query[:80], request.enable_web_search)
+        chat_requests_total.inc()
 
         # ── 多级缓存（精准 + 语义）虚拟节点：命中回放，未命中复用问题向量 ──
         # cache_lookup / cache_replay / cache_store 均为服务层虚拟节点
@@ -96,6 +102,9 @@ class RAGService:
                 logger.info("[stream_rag] 缓存命中: session=%s, query='%s', type=%s",
                             request.session_id, request.query[:80],
                             cache_info.get("cache_type", "exact"))
+                chat_cache_hit_total.labels(
+                    cache_info.get("cache_type", "exact")
+                ).inc()
                 cache_path = ["cache_lookup", "cache_replay"]
                 node_start_ts["cache_replay"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="cache_replay")
@@ -152,6 +161,7 @@ class RAGService:
                     )
                 logger.info("[stream_rag] 缓存回放完成: answer_len=%d, elapsed=%.2fs",
                             len(cache_entry["answer"]), time.time() - t0)
+                chat_stream_duration_seconds.observe(time.time() - t0)
                 return
 
         initial_state: AgentState = {
@@ -447,6 +457,7 @@ class RAGService:
         )
         yield StreamEvent(event="done", data="")
         logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
+        chat_stream_duration_seconds.observe(time.time() - t0)
 
     @staticmethod
     def _doc_detail(doc: Any) -> dict:

@@ -17,6 +17,7 @@ from src.models.document import (
 )
 from src.models.common import SuccessResponse
 from src.config.settings import settings
+from src.metrics import uploads_total, uploads_failed_total
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ async def upload_document(
     if content_length:
         try:
             if int(content_length) > max_bytes + _MULTIPART_OVERHEAD:
+                uploads_failed_total.inc()
                 raise HTTPException(
                     status_code=413,
                     detail=f"文件大小超过限制 ({settings.max_upload_size_mb}MB)",
@@ -80,12 +82,14 @@ async def upload_document(
                     break
                 total += len(chunk)
                 if total > max_bytes:
+                    uploads_failed_total.inc()
                     raise HTTPException(
                         status_code=413,
                         detail=f"文件大小超过限制 ({settings.max_upload_size_mb}MB)",
                     )
                 out.write(chunk)
         if total == 0:
+            uploads_failed_total.inc()
             raise HTTPException(status_code=400, detail="文件内容为空")
 
         # 小文件读入内存走原路径；大文件把临时文件移交给后台（路径传递，避免二次内存拷贝）
@@ -107,6 +111,7 @@ async def upload_document(
             result = service.submit_upload_task(file_source, file.filename)
         except QueueFullError as e:
             # 队列已满：清理已移交的临时文件后返回 429
+            uploads_failed_total.inc()
             if handoff is not None and handoff.exists():
                 handoff.unlink(missing_ok=True)
                 logger.info("队列已满，已清理临时文件: %s", handoff)
@@ -124,6 +129,7 @@ async def upload_document(
 
     logger.info("API 响应: POST /documents/upload → task_id=%s, status=%s",
                 result.task_id, result.status)
+    uploads_total.inc()
     return result
 
 

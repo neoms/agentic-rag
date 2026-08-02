@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     # ========== 服务 ==========
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    log_file: str = "log/app.log"   # 滚动日志文件（10MB × 5）
 
     # CORS 允许来源（逗号分隔；生产环境需显式配置前端地址，不能使用 * 配合 credentials）
     cors_allowed_origins: str = "http://localhost:3000"

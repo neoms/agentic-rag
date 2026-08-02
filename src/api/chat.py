@@ -13,6 +13,7 @@ from src.models.chat import (
     ChatSessionsResponse,
 )
 from src.models.common import SuccessResponse
+from src.metrics import chat_errors_total
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ async def stream_chat(
                 yield line.encode("utf-8")
         except Exception:
             logger.exception("流式对话失败")
+            chat_errors_total.inc()
             err_line = (
                 "event: error\n"
                 "data: "

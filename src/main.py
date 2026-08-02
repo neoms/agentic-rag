@@ -1,10 +1,13 @@
 """Agentic RAG 应用主入口 - FastAPI 应用"""
 
+import json
 import logging
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from src.api.router import api_router
 from src.models.common import HealthResponse, ErrorResponse
@@ -12,13 +15,56 @@ from src.config.settings import settings
 from src.store.vector_store import vector_store
 from src.services.document_service import document_service
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 logger = logging.getLogger(__name__)
+
+# LogRecord 标准属性（extra 字段收集时排除）
+_LOG_RESERVED = set(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+)
+
+
+class JsonFormatter(logging.Formatter):
+    """结构化日志：每行一条 JSON（ts/level/logger/msg/exc_info/extra）"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        for key, value in record.__dict__.items():
+            if key not in _LOG_RESERVED and key not in payload:
+                payload[key] = value
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _setup_logging() -> None:
+    """配置日志：stdout + 滚动文件（log/app.log，10MB × 5），JSON 行格式"""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = JsonFormatter()
+
+    stdout_handler = logging.StreamHandler()
+    stdout_handler.setFormatter(formatter)
+    root.addHandler(stdout_handler)
+
+    log_path = settings.project_root / settings.log_file
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        str(log_path),
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+    logger.info("日志已配置: stdout + %s (10MB × 5 轮转)", log_path)
+
+
+_setup_logging()
 
 
 @asynccontextmanager
@@ -151,6 +197,19 @@ async def health(deep: bool = False):
 
     status = "ok" if all(v.startswith("ok") for v in checks.values()) else "degraded"
     return {"status": status, "version": "0.1.0", "checks": checks}
+
+
+@app.get(
+    "/metrics",
+    summary="Prometheus 指标",
+    description="Prometheus 文本格式指标（含进程级指标），供采集器抓取。",
+    tags=["system"],
+)
+async def metrics():
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 # 注册 API 路由

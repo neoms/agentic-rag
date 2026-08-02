@@ -27,6 +27,7 @@ dependencies = [
     { name = "mistune" },
     { name = "numpy" },
     { name = "pdfminer-six" },
+    { name = "prometheus-client" },
     { name = "pydantic-settings" },
     { name = "python-docx" },
     { name = "python-dotenv" },
@@ -55,6 +56,7 @@ requires-dist = [
     { name = "mistune", specifier = ">=3.3.4" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pdfminer-six", specifier = ">=20260107" },
+    { name = "prometheus-client", specifier = ">=0.26.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
@@ -2142,6 +2144,15 @@ wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/e2/49/e8c8a7bc6b741ab6f15896022eee4f906d04d7ccd15aeeb515dd04bbeb6d/primp-1.3.1-cp314-cp314t-win32.whl", hash = "sha256:4346dcef805279028bf4a54bb87dd43d0920130e25b5790689f5c96c9ba0d9e5" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/a9/84/7ae4a257dec6dff329d4a8d9051d907316095c27ffc8d1ea15c359e6eeb5/primp-1.3.1-cp314-cp314t-win_amd64.whl", hash = "sha256:6c55f152a73b6d6af8ac37bdb648d8bbfd7e656f9ef40d87feb3c0d81cee930a" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/99/20/10e0d96bfaeef1f0cd339ccf9bb8feb4bf798fde93198f7a96c73441080a/primp-1.3.1-cp314-cp314t-win_arm64.whl", hash = "sha256:46a529d74583d6ceba52e15bf4c678fcf24e6d669c1ce935262d5490d1b25801" },
+]
+
+[[package]]
+name = "prometheus-client"
+version = "0.26.0"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/52/73/f1334c29c2af4cd9dba6c7817e61b611bd0215e2eb5565c6064a4de18802/prometheus_client-0.26.0.tar.gz", hash = "sha256:04a91bcf94e2cf74a44a1a874d651a2e853ed354b6e822f3b7487751465d5c2b" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/eb/a3/b69efbf4143b5b9859b977770bbbabcc2796b702fa69dc40271e45cd5a56/prometheus_client-0.26.0-py3-none-any.whl", hash = "sha256:fa93d06737aa02bacd05794768508bb97d2fbee28cb3bca04eaae92f0ca953d6" },
 ]
 
 [[package]]

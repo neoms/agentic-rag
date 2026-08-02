@@ -11,6 +11,7 @@ import tenacity
 from langchain_openai import ChatOpenAI
 
 from src.config.settings import settings
+from src.metrics import llm_calls_total
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def _install_retry_on_llm(llm: ChatOpenAI) -> ChatOpenAI:
     stream / astream 返回生成器，不重试（错误在迭代时捕获）。
     """
     retry_decorator = _build_retry()
+    model = getattr(llm, "model", "unknown")
 
     # 同步 invoke 重试
     original_invoke = llm.invoke
@@ -73,6 +75,7 @@ def _install_retry_on_llm(llm: ChatOpenAI) -> ChatOpenAI:
     @functools.wraps(original_invoke)
     @retry_decorator
     def retry_invoke(*args, **kwargs):
+        llm_calls_total.labels(model=model).inc()
         return original_invoke(*args, **kwargs)
 
     # 使用 object.__setattr__ 绕过 Pydantic v2 的字段验证
@@ -85,9 +88,30 @@ def _install_retry_on_llm(llm: ChatOpenAI) -> ChatOpenAI:
     @functools.wraps(original_ainvoke)
     @retry_decorator
     async def retry_ainvoke(*args, **kwargs):
+        llm_calls_total.labels(model=model).inc()
         return await original_ainvoke(*args, **kwargs)
 
     object.__setattr__(llm, "ainvoke", retry_ainvoke)
+
+    # stream / astream：不做重试，仅计数调用次数
+    original_stream = llm.stream
+
+    @functools.wraps(original_stream)
+    def counting_stream(*args, **kwargs):
+        llm_calls_total.labels(model=model).inc()
+        yield from original_stream(*args, **kwargs)
+
+    object.__setattr__(llm, "stream", counting_stream)
+
+    original_astream = llm.astream
+
+    @functools.wraps(original_astream)
+    async def counting_astream(*args, **kwargs):
+        llm_calls_total.labels(model=model).inc()
+        async for chunk in original_astream(*args, **kwargs):
+            yield chunk
+
+    object.__setattr__(llm, "astream", counting_astream)
 
     logger.debug("LLM 重试已安装: max_retries=%d, timeout=%ds",
                  settings.llm_max_retries, settings.llm_request_timeout)

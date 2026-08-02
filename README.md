@@ -66,6 +66,7 @@ cp .env.example .env
 | `CACHE_MAX_ENTRIES` | 缓存条目上限（LRU 淘汰） | `5000` |
 | `CACHE_TTL_SECONDS` | 缓存过期时间（0 = 不过期） | `0` |
 | `CACHE_CITATION_MAX_CHARS` | 缓存引文段落最大长度 | `500` |
+| `LOG_FILE` | 滚动日志文件路径 | `log/app.log` |
 
 LangSmith 追踪（可选）：
 
