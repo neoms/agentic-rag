@@ -14,6 +14,10 @@ from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# 模块级客户端缓存：(model, temperature, max_tokens, streaming) → ChatOpenAI
+# ChatOpenAI 为无状态客户端，跨请求复用安全；组合数量有限，不会无界增长
+_client_cache: dict[tuple[str, float, int, bool], ChatOpenAI] = {}
+
 
 def _should_retry(exception: BaseException) -> bool:
     """判断异常是否值得重试
@@ -110,6 +114,14 @@ def create_llm_client(
     final_model = model or settings.llm_model
     final_temp = temperature if temperature is not None else settings.llm_temperature
     final_tokens = max_tokens or settings.llm_max_tokens
+
+    # 复用已创建的客户端，避免每个请求重复实例化并重装重试包装
+    cache_key = (final_model, final_temp, final_tokens, streaming)
+    cached = _client_cache.get(cache_key)
+    if cached is not None:
+        logger.debug("复用 LLM 客户端: %s (key=%s)", final_model, cache_key)
+        return cached
+
     logger.info("创建 LLM 客户端: model=%s, temperature=%.2f, max_tokens=%d, streaming=%s",
                 final_model, final_temp, final_tokens, streaming)
     llm = ChatOpenAI(
@@ -122,7 +134,9 @@ def create_llm_client(
         timeout=settings.llm_request_timeout,
         max_retries=0,  # 禁用内置重试，使用 tenacity 统一管理
     )
-    return _install_retry_on_llm(llm)
+    llm = _install_retry_on_llm(llm)
+    _client_cache[cache_key] = llm
+    return llm
 
 
 def create_fast_llm(streaming: bool = False) -> ChatOpenAI:
