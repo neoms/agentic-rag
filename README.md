@@ -53,6 +53,7 @@ cp .env.example .env
 | `KG_DATA_DIR` | 知识图谱数据目录 | `kg_data` |
 | `KG_MAX_HOPS` | KG 子图最大跳数 | `2` |
 | `KG_MAX_ENTITIES` | 单次查询最多实体数 | `10` |
+| `CORS_ALLOWED_ORIGINS` | CORS 允许来源（逗号分隔多个） | `http://localhost:3000` |
 
 LangSmith 追踪（可选）：
 

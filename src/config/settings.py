@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 
+    # CORS 允许来源（逗号分隔；生产环境需显式配置前端地址，不能使用 * 配合 credentials）
+    cors_allowed_origins: str = "http://localhost:3000"
+
     # ========== 多级缓存（精准 + 语义） ==========
     cache_enabled: bool = True
     cache_exact_enabled: bool = True
@@ -130,6 +133,11 @@ class Settings(BaseSettings):
         if not p.is_absolute():
             p = self.project_root / p
         return p
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        """解析 CORS 允许来源为列表（过滤空项）"""
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
 
 # 全局单例
