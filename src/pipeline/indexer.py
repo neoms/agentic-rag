@@ -8,6 +8,7 @@ from pathlib import Path
 from src.pipeline.loader import load_document
 from src.pipeline.chunker import chunk_texts
 from src.store.vector_store import vector_store
+from src.cache import get_cache_service
 from src.knowledge_graph import get_graph_store, get_graph_builder, get_graph_retriever
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,22 @@ class DocumentIndexer:
 
         doc_id = str(uuid.uuid4())
         file_type = Path(filename).suffix.lower().lstrip(".")
+
+        # 同名文档内容更新：精确失效引用旧版本的缓存（不删除旧文档本身）
+        try:
+            stale_doc_ids = [
+                old_id for old_id in vector_store.find_by_filename(filename)
+                if old_id != doc_id
+            ]
+            if stale_doc_ids:
+                invalidated = get_cache_service().invalidate_documents(stale_doc_ids)
+                if invalidated:
+                    logger.info(
+                        "文档更新，已失效引用旧版本的缓存 %d 条 (doc_ids=%s)",
+                        invalidated, stale_doc_ids,
+                    )
+        except Exception as e:
+            logger.warning("同名文档缓存失效异常（不影响索引）: %s", e)
 
         # Step 1: 解析文档
         logger.info("开始解析文档: %s", filename)

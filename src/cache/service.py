@@ -187,13 +187,32 @@ class CacheService:
                 answer=answer,
                 sources=sources,
                 agent_path=agent_path,
-                citations=citations or {},
+                citations=self._truncate_citations(citations),
                 hallucination=hallucination,
             )
             logger.info("[cache] 写回成功: norm='%s', answer_len=%d",
                         query_norm, len(answer))
         except Exception as e:
             logger.warning("[cache] 写回失败: %s", e)
+
+    @staticmethod
+    def _truncate_citations(citations: dict | None) -> dict:
+        """截断引文段落文本，控制缓存 DB 体积（前端引文弹窗为预览用途）"""
+        if not citations:
+            return {}
+        max_chars = settings.cache_citation_max_chars
+        truncated: dict = {}
+        for key, item in citations.items():
+            copy_item = dict(item)
+            para = copy_item.get("paragraph_text")
+            if (
+                isinstance(para, str)
+                and max_chars > 0
+                and len(para) > max_chars
+            ):
+                copy_item["paragraph_text"] = para[:max_chars] + "…"
+            truncated[key] = copy_item
+        return truncated
 
     def invalidate_documents(self, doc_ids: list[str]) -> int:
         """删除文档后精确失效相关缓存条目（精准缓存 + 语义缓存一并清除）

@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     cache_max_entries: int = 5000            # 缓存条目上限（LRU 淘汰）
     cache_ttl_seconds: int = 0               # 0 = 不过期（仅按 LRU 淘汰）
     cache_db_path: str = "data/cache/cache.db"
+    cache_citation_max_chars: int = 500      # 缓存引文段落最大长度（防 DB 膨胀）
 
     # ========== 运行时状态（会话历史 / 上传任务） ==========
     state_db_path: str = "data/state/state.db"

@@ -245,6 +245,18 @@ class VectorStore:
             return doc_id
         return None
 
+    def find_by_filename(self, filename: str) -> list[str]:
+        """通过 filename 查找所有已索引的 doc_id（同名不同版本）"""
+        collection = self._get_or_create_collection()
+        results = collection.get(where={"filename": filename})
+        metadatas = results.get("metadatas", [])
+        doc_ids = sorted(
+            {m.get("doc_id") for m in metadatas if m.get("doc_id")}
+        )
+        if doc_ids:
+            logger.info("按文件名找到 %d 个历史版本: %s", len(doc_ids), filename)
+        return doc_ids
+
     def get_collection_stats(self) -> dict:
         """获取集合统计信息"""
         collection = self._get_or_create_collection()

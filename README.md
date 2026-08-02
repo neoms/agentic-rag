@@ -59,6 +59,13 @@ cp .env.example .env
 | `TASK_HISTORY_TTL_DAYS` | 已完成/失败任务保留天数（0 = 仅按条数限制） | `7` |
 | `INDEX_WORKERS` | 后台索引并发 worker 数 | `2` |
 | `INDEX_QUEUE_MAX` | 排队任务上限（超出拒绝上传） | `20` |
+| `CACHE_ENABLED` | 是否启用多级缓存 | `true` |
+| `CACHE_EXACT_ENABLED` | 是否启用精准缓存 | `true` |
+| `CACHE_SEMANTIC_ENABLED` | 是否启用语义缓存 | `true` |
+| `CACHE_SEMANTIC_THRESHOLD` | 语义缓存命中阈值（余弦相似度） | `0.92` |
+| `CACHE_MAX_ENTRIES` | 缓存条目上限（LRU 淘汰） | `5000` |
+| `CACHE_TTL_SECONDS` | 缓存过期时间（0 = 不过期） | `0` |
+| `CACHE_CITATION_MAX_CHARS` | 缓存引文段落最大长度 | `500` |
 
 LangSmith 追踪（可选）：
 
