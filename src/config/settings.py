@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 0               # 0 = 不过期（仅按 LRU 淘汰）
     cache_db_path: str = "data/cache/cache.db"
 
+    # ========== 运行时状态（会话历史 / 上传任务） ==========
+    state_db_path: str = "data/state/state.db"
+
     @property
     def allowed_extensions_list(self) -> list[str]:
         return [ext.strip().lower() for ext in self.allowed_extensions.split(",")]
@@ -130,6 +133,13 @@ class Settings(BaseSettings):
     @property
     def cache_db_path_abs(self) -> Path:
         p = Path(self.cache_db_path)
+        if not p.is_absolute():
+            p = self.project_root / p
+        return p
+
+    @property
+    def state_db_path_abs(self) -> Path:
+        p = Path(self.state_db_path)
         if not p.is_absolute():
             p = self.project_root / p
         return p

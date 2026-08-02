@@ -10,6 +10,7 @@ const {
   sessionId,
   error,
   sessions,
+  loading,
   isStreaming,
   hallucinationResults,
   send,
@@ -50,7 +51,7 @@ function onNewSession() {
       <SessionHistory
         :sessions="sessions"
         :activeSessionId="sessionId"
-        :loading="historyLoading"
+        :loading="historyLoading || loading"
         @select-session="onSelectSession"
         @new-session="onNewSession"
         @delete-session="deleteSession"

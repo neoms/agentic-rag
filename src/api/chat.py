@@ -10,7 +10,9 @@ from src.services.rag_service import RAGService
 from src.models.chat import (
     AgenticChatRequest,
     ChatHistoryResponse,
+    ChatSessionsResponse,
 )
+from src.models.common import SuccessResponse
 
 logger = logging.getLogger(__name__)
 
@@ -70,3 +72,32 @@ async def get_history(
 ):
     logger.info("API 请求: GET /chat/history/%s", session_id)
     return service.get_history(session_id)
+
+
+@router.get(
+    "/sessions",
+    response_model=ChatSessionsResponse,
+    summary="获取全部会话摘要（侧边栏列表）",
+)
+async def list_sessions(
+    service: RAGService = Depends(get_rag_service),
+):
+    logger.info("API 请求: GET /chat/sessions")
+    return service.list_sessions()
+
+
+@router.delete(
+    "/history/{session_id}",
+    response_model=SuccessResponse,
+    summary="删除会话历史（含持久化数据）",
+)
+async def delete_history(
+    session_id: str,
+    service: RAGService = Depends(get_rag_service),
+):
+    logger.info("API 请求: DELETE /chat/history/%s", session_id)
+    service.clear_history(session_id)
+    return SuccessResponse(
+        success=True,
+        message=f"会话 {session_id} 历史已删除",
+    )

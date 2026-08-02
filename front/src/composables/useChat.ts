@@ -1,73 +1,23 @@
-import { ref, watch } from 'vue'
-import type { UIMessage, SourceDocument, CitationInfo } from '../types'
-import { streamChat, getChatHistory } from '../api/chat'
+import { ref } from 'vue'
+import type { UIMessage, SourceDocument, CitationInfo, ChatHistoryMessage } from '../types'
+import { streamChat, getChatHistory, deleteChatHistory, listChatSessions } from '../api/chat'
 import * as flow from './agentFlowState'
 
 export interface SessionSummary {
   session_id: string
   preview: string
   message_count: number
-  updated_at: number
-}
-
-const LS_KEY_SESSIONS = 'agentic-rag-sessions'
-const LS_KEY_MESSAGES_PREFIX = 'agentic-rag-msgs-'
-const LS_KEY_LAST_SESSION = 'agentic-rag-last-sid'
-const LS_KEY_HALLUCINATION = 'agentic-rag-hallucination'
-
-function loadJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? JSON.parse(raw) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function saveJson(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {}
-}
-
-function loadSessionIds(): string[] {
-  return loadJson<string[]>(LS_KEY_SESSIONS, [])
-}
-
-function saveSessionIds(ids: string[]): void {
-  saveJson(LS_KEY_SESSIONS, ids)
-}
-
-function loadMessages(sid: string): UIMessage[] {
-  return loadJson<UIMessage[]>(`${LS_KEY_MESSAGES_PREFIX}${sid}`, [])
-}
-
-function saveMessages(sid: string, msgs: UIMessage[]): void {
-  saveJson(`${LS_KEY_MESSAGES_PREFIX}${sid}`, msgs)
-}
-
-function removeMessages(sid: string): void {
-  try { localStorage.removeItem(`${LS_KEY_MESSAGES_PREFIX}${sid}`) } catch {}
+  updated_at: number // ms
 }
 
 export function useChat() {
-  // —— 初始化 ——
-  const savedSessionIds = loadSessionIds()
-  const lastSid = localStorage.getItem(LS_KEY_LAST_SESSION)
-
-  // 恢复上次活跃会话（如果 session 列表中还存在）
-  const initSid = (lastSid && savedSessionIds.includes(lastSid))
-    ? lastSid
-    : generateSessionId()
-
-  const initMessages = loadMessages(initSid)
-  const initSessions = buildSessionSummaries(savedSessionIds)
-
-  const messages = ref<UIMessage[]>(initMessages)
+  // —— 会话/消息状态：以数据库为唯一数据源，不再写 localStorage ——
+  const messages = ref<UIMessage[]>([])
   const sending = ref(false)
-  const sessionId = ref(initSid)
+  const sessionId = ref('')
   const error = ref<string | null>(null)
-  const sessions = ref<SessionSummary[]>(initSessions)
+  const sessions = ref<SessionSummary[]>([])
+  const loading = ref(true)
 
   // Agent 选项：直接使用共享 flow 状态，ChatInput 也是同一份引用
   const enableWebSearch = flow.enableWebSearch
@@ -82,36 +32,11 @@ export function useChat() {
   const streamAgentPath = ref<string[]>([])
   const isStreaming = ref(false)
 
-  // 幻觉检测结果 — 独立 ref，key 为消息 ID
-  const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>(
-    loadJson<Record<string, { passed: boolean; faithfulness: number }>>(LS_KEY_HALLUCINATION, {}),
-  )
+  // 幻觉检测结果 — 仅内存态（SSE 实时写入；刷新后从历史接口按消息恢复）
+  const hallucinationResults = ref<Record<string, { passed: boolean; faithfulness: number }>>({})
 
   // 引文标注元数据
   const streamCitations = ref<Record<string, CitationInfo>>({})
-
-  // —— localStorage 同步 ——
-  // 消息变化 → 持久化
-  watch(messages, (val) => {
-    saveMessages(sessionId.value, val)
-    syncSessionIds()
-  }, { deep: true })
-
-  // sessionId 变化 → 持久化
-  watch(sessionId, (val) => {
-    if (val) localStorage.setItem(LS_KEY_LAST_SESSION, val)
-  })
-
-  // sessions 变化 → 持久化 id 列表
-  watch(sessions, (val) => {
-    const ids = val.map(s => s.session_id)
-    saveSessionIds(ids)
-  }, { deep: true })
-
-  // 幻觉结果变化 → 持久化
-  watch(hallucinationResults, (val) => {
-    saveJson(LS_KEY_HALLUCINATION, val)
-  }, { deep: true })
 
   // —— 辅助函数 ——
 
@@ -119,54 +44,34 @@ export function useChat() {
     return crypto.randomUUID().slice(0, 8)
   }
 
-  function buildSessionSummaries(ids: string[]): SessionSummary[] {
-    return ids.map(sid => {
-      const msgs = loadMessages(sid)
-      const userMsgs = msgs.filter(m => m.role === 'user')
-      const preview = userMsgs.length > 0
-        ? userMsgs[userMsgs.length - 1].content.slice(0, 40) + (userMsgs[userMsgs.length - 1].content.length > 40 ? '...' : '')
-        : '空会话'
-      return {
-        session_id: sid,
-        preview,
-        message_count: msgs.length,
-        updated_at: msgs.length > 0 ? (msgs[msgs.length - 1].timestamp || 0) : 0,
+  async function refreshSessions(): Promise<void> {
+    try {
+      const res = await listChatSessions()
+      sessions.value = res.sessions.map(s => ({
+        session_id: s.session_id,
+        preview: s.preview,
+        message_count: s.message_count,
+        updated_at: Math.round(s.updated_at * 1000),
+      }))
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '加载会话列表失败'
+    }
+  }
+
+  function buildMessagesFromHistory(msgs: ChatHistoryMessage[]): UIMessage[] {
+    const built: UIMessage[] = []
+    const hMap: Record<string, { passed: boolean; faithfulness: number }> = {}
+    for (const m of msgs) {
+      const id = crypto.randomUUID()
+      const ui: UIMessage = { id, role: m.role, content: m.content, timestamp: Date.now() }
+      if (m.role === 'assistant' && m.hallucination) {
+        ui.hallucination_passed = m.hallucination.passed
+        hMap[id] = { passed: m.hallucination.passed, faithfulness: m.hallucination.faithfulness }
       }
-    }).sort((a, b) => b.updated_at - a.updated_at)
-  }
-
-  function syncSessionIds() {
-    const currentIds = loadSessionIds()
-    if (!currentIds.includes(sessionId.value)) {
-      currentIds.push(sessionId.value)
-      saveSessionIds(currentIds)
+      built.push(ui)
     }
-  }
-
-  function addMessage(msg: UIMessage) {
-    messages.value.push(msg)
-  }
-
-  function updateSessionPreview() {
-    const userMsgs = messages.value.filter(m => m.role === 'user')
-    const preview = userMsgs.length > 0
-      ? userMsgs[userMsgs.length - 1].content.slice(0, 40) + (userMsgs[userMsgs.length - 1].content.length > 40 ? '...' : '')
-      : '空会话'
-
-    const existing = sessions.value.find(s => s.session_id === sessionId.value)
-    if (existing) {
-      existing.preview = preview
-      existing.message_count = messages.value.length
-      existing.updated_at = Date.now()
-      sessions.value.sort((a, b) => b.updated_at - a.updated_at)
-    } else if (messages.value.length > 0) {
-      sessions.value.unshift({
-        session_id: sessionId.value,
-        preview,
-        message_count: messages.value.length,
-        updated_at: Date.now(),
-      })
-    }
+    hallucinationResults.value = hMap
+    return built
   }
 
   async function loadSession(id: string) {
@@ -174,55 +79,59 @@ export function useChat() {
 
     error.value = null
     sessionId.value = id
-
-    // 先从 localStorage 恢复（瞬时），再从后端刷新（保证最新）
-    const cached = loadMessages(id)
-    if (cached.length > 0) {
-      messages.value = cached
-      updateSessionPreview()
-      return
-    }
-
-    // 本地没有缓存，从后端拉取
     messages.value = []
     try {
       const result = await getChatHistory(id)
-      if (result && result.messages.length > 0) {
-        messages.value = result.messages.map(msg => ({
-          id: crypto.randomUUID(),
-          role: msg.role,
-          content: msg.content,
-          timestamp: Date.now(),
-        }))
-        updateSessionPreview()
-      }
+      messages.value = buildMessagesFromHistory(result.messages)
     } catch (e) {
       error.value = e instanceof Error ? e.message : '加载会话历史失败'
     }
   }
 
+  async function init() {
+    try {
+      await refreshSessions()
+      if (sessions.value.length > 0) {
+        await loadSession(sessions.value[0].session_id)
+      } else {
+        newSession()
+      }
+    } finally {
+      loading.value = false
+    }
+  }
+
   function newSession() {
-    const sid = generateSessionId()
-    sessionId.value = sid
+    sessionId.value = generateSessionId()
     messages.value = []
     error.value = null
     streamingContent.value = ''
     streamSources.value = []
     streamAgentPath.value = []
     streamCitations.value = {}
-    // 确保新 session 也初始化一份空的 localStorage 条目
-    saveMessages(sid, [])
+    hallucinationResults.value = {}
+    flow.currentNode.value = null
+    flow.completedNodes.value = []
+    flow.skippedNodes.value = []
+    flow.nodeDataMap.value = {}
   }
 
-  function deleteSession(id: string) {
+  async function deleteSession(id: string) {
+    // 先删除后端持久化历史，失败则中止本地删除，保持前后端一致
+    try {
+      await deleteChatHistory(id)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '删除会话历史失败'
+      return
+    }
+
     // 从内存中移除
     sessions.value = sessions.value.filter(s => s.session_id !== id)
-    removeMessages(id)
 
     // 如果删除的是当前会话，切换到最新会话或新建
     if (sessionId.value === id) {
       if (sessions.value.length > 0) {
-        loadSession(sessions.value[0].session_id)
+        await loadSession(sessions.value[0].session_id)
       } else {
         newSession()
       }
@@ -231,6 +140,7 @@ export function useChat() {
 
   async function send(query: string) {
     if (!query.trim() || sending.value) return
+    if (!sessionId.value) newSession()
 
     error.value = null
 
@@ -240,7 +150,7 @@ export function useChat() {
       content: query,
       timestamp: Date.now(),
     }
-    addMessage(userMsg)
+    messages.value.push(userMsg)
 
     sending.value = true
     isStreaming.value = true
@@ -260,7 +170,7 @@ export function useChat() {
       timestamp: Date.now(),
       isStreaming: true,
     }
-    addMessage(assistantMsg)
+    messages.value.push(assistantMsg)
     const assistantId = assistantMsg.id
     const msgIndex = messages.value.length - 1
 
@@ -423,8 +333,12 @@ export function useChat() {
       sending.value = false
     }
 
-    updateSessionPreview()
+    // 结束后从数据库刷新会话列表（预览/消息数/排序以数据库为准）
+    await refreshSessions()
   }
+
+  // 启动时从数据库加载会话列表与最近会话
+  void init()
 
   return {
     messages,
@@ -432,6 +346,7 @@ export function useChat() {
     sessionId,
     error,
     sessions,
+    loading,
     streamingContent,
     streamSources,
     isStreaming,

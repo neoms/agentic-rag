@@ -29,12 +29,27 @@ class ChatHistoryMessage(BaseModel):
     """对话历史中单条消息"""
     role: str  # user / assistant
     content: str
+    hallucination: dict | None = None  # 幻觉检测结果 {passed, faithfulness}，assistant 消息可带
 
 
 class ChatHistoryResponse(BaseModel):
     """对话历史响应"""
     session_id: str
     messages: list[ChatHistoryMessage]
+    total: int
+
+
+class ChatSessionSummary(BaseModel):
+    """会话摘要（侧边栏列表用）"""
+    session_id: str
+    preview: str = ""
+    message_count: int = 0
+    updated_at: float = 0.0  # epoch 秒（最近一条消息时间）
+
+
+class ChatSessionsResponse(BaseModel):
+    """会话列表响应"""
+    sessions: list[ChatSessionSummary]
     total: int
 
 

@@ -21,6 +21,8 @@ from src.models.chat import (
     SourceDocument,
     ChatHistoryResponse,
     ChatHistoryMessage,
+    ChatSessionSummary,
+    ChatSessionsResponse,
     StreamEvent,
 )
 from src.memory.manager import memory_manager
@@ -140,6 +142,14 @@ class RAGService:
                 memory_manager.add_interaction(
                     request.session_id, request.query, cache_entry["answer"],
                 )
+                # 缓存条目中存有幻觉结果时一并恢复
+                cached_h = cache_entry.get("hallucination")
+                if isinstance(cached_h, dict):
+                    memory_manager.add_hallucination_result(
+                        request.session_id,
+                        cached_h.get("passed", True),
+                        cached_h.get("faithfulness", 100.0),
+                    )
                 logger.info("[stream_rag] 缓存回放完成: answer_len=%d, elapsed=%.2fs",
                             len(cache_entry["answer"]), time.time() - t0)
                 return
@@ -351,6 +361,10 @@ class RAGService:
 
             # 记录对话
             memory_manager.add_interaction(request.session_id, request.query, answer)
+            if request.enable_reflection:
+                memory_manager.add_hallucination_result(
+                    request.session_id, hallucination_passed, hallucination_faithfulness,
+                )
             logger.info("[stream_rag] 流式生成完成: answer_len=%d, node=%s",
                          len(answer), generate_node_id)
         else:
@@ -665,11 +679,28 @@ class RAGService:
         return ChatHistoryResponse(
             session_id=session_id,
             messages=[
-                ChatHistoryMessage(role=m["role"], content=m["content"])
+                ChatHistoryMessage(
+                    role=m["role"],
+                    content=m["content"],
+                    hallucination=m.get("hallucination"),
+                )
                 for m in messages
             ],
             total=len(messages),
         )
+
+    def list_sessions(self) -> ChatSessionsResponse:
+        """获取全部会话摘要（按最近活跃时间倒序）"""
+        sessions = memory_manager.list_sessions()
+        return ChatSessionsResponse(
+            sessions=[ChatSessionSummary(**s) for s in sessions],
+            total=len(sessions),
+        )
+
+    def clear_history(self, session_id: str) -> None:
+        """删除会话历史（内存 + 持久化存储）"""
+        logger.info("[clear_history] session=%s", session_id)
+        memory_manager.clear(session_id)
 
 
 # 全局单例

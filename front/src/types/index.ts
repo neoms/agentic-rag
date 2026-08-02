@@ -27,11 +27,24 @@ export interface SourceDocument {
 export interface ChatHistoryMessage {
   role: 'user' | 'assistant'
   content: string
+  hallucination?: { passed: boolean; faithfulness: number } | null
 }
 
 export interface ChatHistoryResponse {
   session_id: string
   messages: ChatHistoryMessage[]
+  total: number
+}
+
+export interface ChatSessionSummary {
+  session_id: string
+  preview: string
+  message_count: number
+  updated_at: number  // epoch 秒
+}
+
+export interface ChatSessionsResponse {
+  sessions: ChatSessionSummary[]
   total: number
 }
 

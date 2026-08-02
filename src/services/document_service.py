@@ -13,6 +13,7 @@ from pathlib import Path
 
 from src.config.settings import settings
 from src.cache import get_cache_service
+from src.store.state_store import get_runtime_state_store
 from src.pipeline.indexer import document_indexer
 from src.models.document import (
     DocumentInfo,
@@ -33,6 +34,29 @@ class DocumentService:
     def __init__(self):
         self._tasks: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._store = get_runtime_state_store()
+        self._restore_tasks()
+
+    def _restore_tasks(self):
+        """启动时恢复任务表：未完成任务标记中断，其余载入内存"""
+        try:
+            interrupted = self._store.mark_interrupted_tasks()
+            for task in self._store.list_tasks():
+                self._tasks[task["task_id"]] = task
+            if interrupted:
+                logger.info("已将 %d 个中断任务标记为 failed", interrupted)
+            logger.info("从持久化恢复 %d 个上传任务", len(self._tasks))
+        except Exception as e:
+            logger.warning("上传任务持久化恢复失败（不影响使用）: %s", e)
+
+    def _persist_task(self, task_id: str):
+        """将当前任务状态快照写入持久化存储（失败仅告警）"""
+        with self._lock:
+            task = dict(self._tasks[task_id])
+        try:
+            self._store.upsert_task(task)
+        except Exception as e:
+            logger.warning("任务状态持久化失败 task_id=%s: %s", task_id, e)
 
     @property
     def _temp_dir(self) -> Path:
@@ -84,6 +108,7 @@ class DocumentService:
                 "completed_at": None,
                 "chunk_count": 0,
             }
+        self._persist_task(task_id)
         return task_id, doc_id
 
     def _background_process(
@@ -102,6 +127,7 @@ class DocumentService:
         with self._lock:
             self._tasks[task_id]["status"] = TaskStatus.PROCESSING
             self._tasks[task_id]["message"] = "正在解析和索引文档..."
+        self._persist_task(task_id)
 
         tmp_path: Path | None = file_source if isinstance(file_source, Path) else None
         try:
@@ -121,6 +147,7 @@ class DocumentService:
                 )
                 self._tasks[task_id]["chunk_count"] = result["chunk_count"]
                 self._tasks[task_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+            self._persist_task(task_id)
             logger.info("[background] 文档处理完成: %s, task_id=%s, chunks=%d",
                         filename, task_id, result["chunk_count"])
         except Exception as e:
@@ -128,6 +155,7 @@ class DocumentService:
                 self._tasks[task_id]["status"] = TaskStatus.FAILED
                 self._tasks[task_id]["message"] = f"处理失败: {str(e)}"
                 self._tasks[task_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+            self._persist_task(task_id)
             logger.exception("[background] 文档处理失败: %s, task_id=%s", filename, task_id)
         finally:
             # 清理临时文件

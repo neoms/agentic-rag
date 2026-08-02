@@ -99,6 +99,7 @@ npm run build     # 构建生产包到 front/dist/
 | DELETE | `/api/v1/documents/{doc_id}` | 删除文档及其向量块 |
 | POST | `/api/v1/chat/stream` | Agent 流式对话（SSE，事件类型：source/path/token/done/error/hallucination等） |
 | GET | `/api/v1/chat/history/{session_id}` | 获取会话历史 |
+| DELETE | `/api/v1/chat/history/{session_id}` | 删除会话历史（含持久化数据） |
 
 ### Agentic 请求体参数
 
