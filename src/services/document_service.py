@@ -209,18 +209,17 @@ class DocumentService:
             if tmp_path:
                 self._cleanup_temp(tmp_path)
 
-    def submit_upload_task(self, file_bytes: bytes, filename: str) -> TaskSubmitResponse:
+    def submit_upload_task(
+        self, file_input: bytes | Path, filename: str
+    ) -> TaskSubmitResponse:
         """提交文档上传任务（有界队列异步处理）
 
-        大文件自动保存到临时目录后后台处理，释放内存。
-        小文件直接传递 bytes 避免磁盘 I/O。
+        小文件传 bytes（服务层按需落盘）；大文件可由路由层直接传临时文件 Path，
+        避免二次内存拷贝与重复落盘。
 
         立即返回任务信息，实际处理由 worker 池执行；队列已满时抛出
         QueueFullError（路由层转为 HTTP 429）。
         """
-        size = len(file_bytes)
-        logger.info("[document_service] 提交后台任务: %s, size=%d bytes", filename, size)
-
         # 队列有界：获取信号量失败直接拒绝（不创建任务记录）
         if not self._queue_sem.acquire(blocking=False):
             raise QueueFullError(
@@ -230,16 +229,29 @@ class DocumentService:
         try:
             task_id, doc_id = self._init_task(filename)
 
-            is_large = self._is_large_file(size)
-            if is_large:
-                # 大文件：保存到临时文件，传递路径
-                tmp_path = self._save_to_temp(file_bytes, filename)
-                file_source: bytes | Path = tmp_path
-                # 释放内存引用
-                del file_bytes
-                logger.info("大文件已暂存到临时文件: %s (%.1f MB)", tmp_path, size / 1024 / 1024)
+            if isinstance(file_input, Path):
+                size = file_input.stat().st_size
+                file_source: bytes | Path = file_input
+                logger.info(
+                    "[document_service] 提交后台任务(Path): %s, size=%d bytes",
+                    filename, size,
+                )
             else:
-                file_source = file_bytes
+                size = len(file_input)
+                logger.info(
+                    "[document_service] 提交后台任务: %s, size=%d bytes",
+                    filename, size,
+                )
+                if self._is_large_file(size):
+                    # 大文件：保存到临时文件，传递路径
+                    tmp_path = self._save_to_temp(file_input, filename)
+                    file_source = tmp_path
+                    logger.info(
+                        "大文件已暂存到临时文件: %s (%.1f MB)",
+                        tmp_path, size / 1024 / 1024,
+                    )
+                else:
+                    file_source = file_input
 
             # 惰性清理历史任务（新任务已落库，重建内存任务表）
             self._prune_tasks()

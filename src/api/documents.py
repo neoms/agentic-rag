@@ -1,7 +1,11 @@
 """文档管理 API 路由"""
 
 import logging
+import shutil
+import uuid
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import Request
+from pathlib import Path
 from src.api.dependencies import get_document_service
 from src.services.document_service import DocumentService, QueueFullError
 from src.models.document import (
@@ -16,6 +20,10 @@ from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# 上传分块大小与 multipart 头部开销预留（Content-Length 预检用）
+UPLOAD_CHUNK_SIZE = 256 * 1024
+_MULTIPART_OVERHEAD = 1024 * 1024
+
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
@@ -27,6 +35,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
     status_code=202,
 )
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     service: DocumentService = Depends(get_document_service),
 ):
@@ -43,24 +52,76 @@ async def upload_document(
             detail=f"不支持的文件格式: {ext}，支持的格式: {settings.allowed_extensions_list}",
         )
 
-    # 读取文件内容
-    content = await file.read()
-    if len(content) > settings.max_upload_size_mb * 1024 * 1024:
-        raise HTTPException(
-            status_code=400,
-            detail=f"文件大小超过限制 ({settings.max_upload_size_mb}MB)",
-        )
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="文件内容为空")
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
 
-    logger.info("文件已读取: %s, size=%d bytes", file.filename, len(content))
+    # Content-Length 预检：multipart 开销放宽 1MB，超大请求在读取前直接拒绝
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes + _MULTIPART_OVERHEAD:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"文件大小超过限制 ({settings.max_upload_size_mb}MB)",
+                )
+        except ValueError:
+            pass
 
-    # 提交后台任务（内容校验已在 loader.validate_content 中处理）
+    # 分块流式写入临时文件，边写边计数，超限立即中止（超大文件不会全量进内存）
+    temp_uploads = settings.project_root / "data" / "temp_uploads"
+    temp_uploads.mkdir(parents=True, exist_ok=True)
+    spool_path = temp_uploads / f"{uuid.uuid4().hex}.upload"
+    handoff: Path | None = None
+    total = 0
     try:
-        result = service.submit_upload_task(content, file.filename)
-    except QueueFullError as e:
-        logger.warning("上传被拒绝（索引队列已满）: filename=%s", file.filename)
-        raise HTTPException(status_code=429, detail=str(e)) from e
+        with open(spool_path, "wb") as out:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件大小超过限制 ({settings.max_upload_size_mb}MB)",
+                    )
+                out.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="文件内容为空")
+
+        # 小文件读入内存走原路径；大文件把临时文件移交给后台（路径传递，避免二次内存拷贝）
+        large_threshold = settings.large_file_threshold_mb * 1024 * 1024
+        if total <= large_threshold:
+            with open(spool_path, "rb") as f:
+                file_source: bytes | Path = f.read()
+        else:
+            suffix = Path(file.filename).suffix or ".tmp"
+            handoff = temp_uploads / f"{uuid.uuid4().hex}{suffix}"
+            shutil.move(str(spool_path), str(handoff))
+            file_source = handoff
+            logger.info("大文件已移交后台: %s (%.1f MB)", handoff, total / 1024 / 1024)
+
+        logger.info("文件已接收: %s, size=%d bytes", file.filename, total)
+
+        # 提交后台任务（内容校验已在 loader.validate_content 中处理）
+        try:
+            result = service.submit_upload_task(file_source, file.filename)
+        except QueueFullError as e:
+            # 队列已满：清理已移交的临时文件后返回 429
+            if handoff is not None and handoff.exists():
+                handoff.unlink(missing_ok=True)
+                logger.info("队列已满，已清理临时文件: %s", handoff)
+            logger.warning("上传被拒绝（索引队列已满）: filename=%s", file.filename)
+            raise HTTPException(status_code=429, detail=str(e)) from e
+        except Exception:
+            # 其他异常同样清理已移交的临时文件
+            if handoff is not None and handoff.exists():
+                handoff.unlink(missing_ok=True)
+            raise
+    finally:
+        # 小文件路径：spool 已删除；大文件路径：已移交（成功交给后台清理，失败已在上方清理）
+        if spool_path.exists():
+            spool_path.unlink(missing_ok=True)
+
     logger.info("API 响应: POST /documents/upload → task_id=%s, status=%s",
                 result.task_id, result.status)
     return result
