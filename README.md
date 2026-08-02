@@ -4,11 +4,13 @@
 
 ## 架构特点
 
-- **多策略并行检索**：语义检索 + MMR 多样性、BM25 关键词、HyDE 假设文档嵌入、Multi-Query 多角度查询，通过 LangGraph Send API 实现 fan-out/fan-in 并行执行，可独立开关控制
+- **多策略并行检索**：语义检索 + MMR 多样性、BM25 关键词、Multi-Query 多角度查询、知识图谱检索，在 `parallel_retrieve_merge` 节点内用线程池并行执行，可独立开关控制
 - **知识图谱模块**：Kuzu 图数据库（原生持久化）+ numpy .npz 二进制向量索引，LLM 自动抽取实体关系构建图谱，支持意图分析路由、实体链接、子图提取、多跳路径推理，不适用时平滑降级到原有 RAG 流程
 - **重排序精排**：LLM Cross-Encoder 对检索结果二次排序，提升 Top-K 文档质量
 - **Agent 智能体**：自反思能力（文档评估 → 查询重写 → 幻觉检测）；支持 Tool Calling（联网搜索）
 - **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
+- **多级缓存（精准 + 语义）**：请求先进缓存，精准缓存按规范化问题 + 策略签名精确匹配，语义缓存按问题向量余弦相似度（默认 ≥0.92）命中；都不命中才调用 LLM，命中时回放存储的答案/来源/路径，零 LLM 调用。语义缓存阶段计算的问题向量复用于检索，不重复调用 Embedding
+- **可观测性**：`/metrics` Prometheus 指标（QPS/缓存命中/LLM 调用/耗时直方图）、JSON 结构化滚动日志（`log/app.log`，10MB × 5）、组件化 `/health` 健康检查（`?deep=true` 可做 Embedding 探针）
 - **LangSmith 评估**：8 维度自动化评估流水线（正确性/忠实度/相关性/完整性/上下文精度/延迟等），版本化目录管理（v1/v2）
 - **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
 - **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
@@ -40,17 +42,17 @@ cp .env.example .env
 | `LLM_MODEL_STRONG` | 强生成模型 | `qwen-max` |
 | `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `data/chroma` |
-| `RETRIEVAL_TOP_K` | 检索候选数 | `20` |
+| `RETRIEVAL_TOP_K` | 检索候选数 | `12` |
 | `RETRIEVAL_SIMILARITY_THRESHOLD` | 语义检索过滤阈值 | `0.5` |
 | `RERANK_ENABLED` | 是否启用重排序 | `true` |
-| `RERANK_MODEL` | 重排序模型 | `gte-rerank` |
+| `RERANK_MODEL` | 重排序模型 | `gte-rerank-v2` |
 | `RERANK_TOP_K` | 重排序后保留数 | `5` |
 | `GRADE_SCORE_IRRELEVANT_MAX` | 文档评估负判定：全体文档最高分 ≤ 此值直接不相关（0 LLM） | `0.25` |
 | `GRADE_SCORE_RELEVANT_MIN` | 文档评估正判定：top1 分数下限 | `0.70` |
 | `GRADE_SCORE_RELEVANT_GAP` | 文档评估正判定：top1 与 top2 最小分差（断层检测） | `0.10` |
 | `MEMORY_WINDOW_SIZE` | 对话记忆窗口 | `20` |
 | `MAX_UPLOAD_SIZE_MB` | 上传文件大小限制 | `10` |
-| `KG_DATA_DIR` | 知识图谱数据目录 | `kg_data` |
+| `KG_DATA_DIR` | 知识图谱数据目录 | `data/kg` |
 | `KG_MAX_HOPS` | KG 子图最大跳数 | `2` |
 | `KG_MAX_ENTITIES` | 单次查询最多实体数 | `10` |
 | `CORS_ALLOWED_ORIGINS` | CORS 允许来源（逗号分隔多个） | `http://localhost:3000` |
@@ -67,6 +69,9 @@ cp .env.example .env
 | `CACHE_TTL_SECONDS` | 缓存过期时间（0 = 不过期） | `0` |
 | `CACHE_CITATION_MAX_CHARS` | 缓存引文段落最大长度 | `500` |
 | `LOG_FILE` | 滚动日志文件路径 | `log/app.log` |
+
+更多配置项（分块参数、重试、上传阈值、内容校验、模型温度等）见 `src/config/settings.py`；
+启动时会自动校验关键配置，错误会逐项给出当前值/原因/修改位置/修复方式（见 `src/config/validation.py`）。
 
 LangSmith 追踪（可选）：
 
@@ -102,7 +107,17 @@ npm run build     # 构建生产包到 front/dist/
 
 前端运行在 http://localhost:3000。
 
-### 4. Docker 部署（推荐）
+### 4. 运行测试
+
+```bash
+# 后端测试（33 个用例，数据隔离在临时目录，无需外网）
+uv run pytest
+
+# 前端构建检查
+cd front && npm run build
+```
+
+### 5. Docker 部署（推荐）
 
 ```bash
 # 1. 准备环境变量（至少填写 DASHSCOPE_API_KEY）
@@ -155,10 +170,13 @@ docker compose restart backend
 |------|------|------|
 | GET | `/health` | 健康检查（逐组件明细；`?deep=true` 额外做 Embedding 探针） |
 | GET | `/metrics` | Prometheus 指标（文本格式，供采集器抓取） |
-| POST | `/api/v1/documents/upload` | 上传文档（PDF/MD/TXT，最大 10MB） |
+| POST | `/api/v1/documents/upload` | 上传文档（PDF/MD/TXT/DOCX/CSV，最大 10MB；流式落盘 + 队列上限，超限 413/429） |
 | GET | `/api/v1/documents` | 列出已索引文档 |
 | DELETE | `/api/v1/documents/{doc_id}` | 删除文档及其向量块 |
+| GET | `/api/v1/documents/tasks` | 列出全部上传索引任务 |
+| GET | `/api/v1/documents/tasks/{task_id}` | 查询单个任务状态 |
 | POST | `/api/v1/chat/stream` | Agent 流式对话（SSE，事件类型：source/path/token/done/error/hallucination等） |
+| GET | `/api/v1/chat/sessions` | 获取全部会话摘要（侧边栏列表） |
 | GET | `/api/v1/chat/history/{session_id}` | 获取会话历史 |
 | DELETE | `/api/v1/chat/history/{session_id}` | 删除会话历史（含持久化数据） |
 
@@ -167,68 +185,51 @@ docker compose restart backend
 | 参数 | 类型 | 说明 | 默认值 |
 |------|------|------|--------|
 | `query` | string | 用户问题 | 必填 |
-| `session_id` | string | 会话 ID | 自动生成 |
-| `stream` | bool | 是否流式输出 | `false` |
+| `session_id` | string | 会话 ID（历史服务端持久化） | 自动生成 |
+| `use_cache` | bool | 是否启用多级缓存（评估/调试可绕过） | `true` |
 | `enable_web_search` | bool | 联网搜索 | `false` |
 | `enable_reflection` | bool | 自反思/幻觉检测 | `true` |
 | `enable_rerank` | bool | 重排序 | `true` |
 | `enable_grade_documents` | bool | 文档相关性评估 | `true` |
 | `enable_transform_query` | bool | 查询重写 | `true` |
-| `enable_bm25` | bool | BM25 关键词检索 | `false` |
-| `enable_hyde` | bool | HyDE 假设文档检索 | `false` |
+| `enable_bm25` | bool | BM25 关键词检索 | `true` |
 | `enable_multi_query` | bool | Multi-Query 多角度检索 | `false` |
-| `enable_kg` | bool | 知识图谱检索 | `false` |
+| `enable_kg` | bool | 知识图谱检索 | `true` |
 
 ## LangGraph Agent 状态图
 
-系统包含 15 个节点，通过可配置开关控制执行路径：
+图内节点 10 个，配合服务层 3 个缓存虚拟节点与图外幻觉检测。完整执行路径：
 
 ```
 START
   │
   ▼
-analyze_kg_intent ──── (KG 意图分析，决定是否走 KG 路径)
+cache_lookup（虚拟节点：精准 → 语义，均未命中才进入下图）
+  │ 命中 ──────────────► cache_replay（虚拟节点：回放答案/来源/路径，零 LLM 调用）
+  ▼ 未命中
+analyze_kg_intent（KG 意图分析，决定是否走 KG 路径）
   │
   ▼
-retrieve (语义+MMR)
+parallel_retrieve_merge（语义+MMR；线程池并行 BM25 / Multi-Query / KG 并合并去重）
   │
-  ├──[bm25_retrieve]───┐   ← 条件 Send，fan-out 并行
-  ├──[hyde_retrieve]───┤
-  ├──[multi_query_retrieve]┤
-  ├──[kg_retrieve]─────┤   ← 仅 kg_intent=True 时触发
-  │                    │
-  └────────────────────┤
-                       ▼
-              merge_retrieval (fan-in 收敛，合并去重)
-                       │
-              ┌────────┼──────────┐
-              ▼        ▼          ▼
-        rerank ON  rerank OFF  rerank OFF
-              │   +grade ON   +grade OFF
-              ▼        │          │
-       rerank_documents │          │
-              │        │          │
-              ▼        ▼          │
-       grade_documents ←─────────┘
-              │
-       ┌──────┼──────┐
-       ▼      ▼      ▼
-   [相关]  [不相关]  [不相关+联网]
-       │      │      │
-       │      ▼      ▼
-       │  transform  web_search
-       │  _query      │
-       │      │      │
-       └──────┴──────┘
-              │
-              ▼
-          generate
-              │
-              ▼
-     check_hallucination ──→ [有幻觉] → generate (重试)
-              │
-              ▼
-            END
+  ├─ rerank_documents ──► grade_documents
+  │                        ├─ [相关] ────────────► judge_complexity
+  │                        ├─ [不相关 + 联网] ────► web_search ──► judge_complexity
+  │                        └─ [不相关] ──► transform_query ──► retrieve ──► rerank_documents（最多 3 轮）
+  │
+  ▼
+judge_complexity
+  ├─ SIMPLE  ──► generate_simple（qwen-turbo 流式）
+  └─ COMPLEX ──► generate_complex（qwen-max 流式）
+  │
+  ▼
+check_hallucination（图外执行：自反思开启时检测忠实度；失败不重试）
+  │
+  ▼
+cache_store（虚拟节点：反射通过或关闭且答案非空时写回缓存）
+  │
+  ▼
+END
 ```
 
 ### 节点说明
@@ -236,18 +237,16 @@ retrieve (语义+MMR)
 | 节点 | 功能 | 模型 |
 |------|------|------|
 | `analyze_kg_intent` | LLM 分析问题是否需要知识图谱（实体关系/多跳推理 → KG；定义/教程 → 降级） | qwen-turbo |
-| `retrieve` | 语义检索 + MMR 多样性检索，合并去重 | Embedding |
-| `bm25_retrieve` | BM25 关键词检索，使用 jieba 分词，适合精确术语匹配 | jieba + BM25 |
-| `hyde_retrieve` | 生成假设答案 → 向量化 → 用假设答案检索，缩小语义鸿沟 | qwen-turbo + Embedding |
-| `multi_query_retrieve` | 多角度改写查询（3-5 个子查询），独立检索后去重合并 | qwen-turbo + Embedding |
-| `kg_retrieve` | LLM 抽取实体 → Entity Linking → BFS 子图提取 → 多跳路径推理 → 结构化上下文 | qwen-turbo + Embedding |
-| `merge_retrieval` | fan-in 收敛点：合并所有检索策略结果，按内容去重，KG 上下文优先附加 | — |
-| `rerank_documents` | LLM Cross-Encoder 对合并文档做二次精排 | qwen-turbo |
-| `grade_documents` | 严格评估文档是否包含能回答问题的关键信息 | qwen-turbo |
+| `parallel_retrieve_merge` | 语义+MMR 检索 + 线程池并行 BM25/Multi-Query/KG，合并去重；语义缓存阶段的问题向量直接复用 | Embedding + jieba + Kuzu |
+| `retrieve` | 查询重写循环内的语义+MMR 检索 | Embedding |
+| `rerank_documents` | 百炼 TextReRank 二次精排（接口异常时降级为原始排序并在图中标注） | gte-rerank-v2 |
+| `grade_documents` | 文档相关性评估（含关键词快速路径，可 0 LLM） | qwen-turbo |
 | `web_search` | 向量库无匹配时，DuckDuckGo 搜索网页作为降级方案 | HTTP |
-| `transform_query` | 文档不相关时自动重写查询，优化检索质量 | qwen-turbo |
-| `generate` | 基于检索文档 + KG 上下文生成最终答案 | qwen-max |
-| `check_hallucination` | 检测答案是否与源文档一致，不一致则重试（最多 3 次） | qwen-turbo |
+| `transform_query` | 文档不相关时自动重写查询（最多 3 轮） | qwen-turbo |
+| `judge_complexity` | 复杂度判定（规则快速路径 + LLM 兜底） | qwen-turbo |
+| `generate_simple` / `generate_complex` | 流式生成最终答案（简单/复杂分别用快速/强模型） | qwen-turbo / qwen-max |
+| `check_hallucination` | 图外幻觉检测：输出忠实度评分；失败不重试、答案不写缓存 | qwen-turbo |
+| `cache_lookup` / `cache_replay` / `cache_store` | 缓存虚拟节点（服务层事件驱动，非 LangGraph 节点）：查询/回放/写回 | — |
 
 ## 知识图谱模块
 
@@ -347,14 +346,28 @@ uv run python eval/run_eval.py --version v3 --enable-kg
 
 ## 前端功能
 
-- **三种对话模式**：基础 RAG / Agent 自反思 / Agent 流式输出（SSE 逐字渲染）
-- **9 个策略开关**：联网搜索、自反思、重排序、文档评估、查询重写、BM25 检索、HyDE 检索、Multi-Query 检索、知识图谱检索，实时切换
-- **来源文档展示**：可展开查看，区分本地文档（绿色）、网页来源（蓝色可点击跳转）、知识图谱（橙色）
-- **Agent 路径可视化**：彩色标签展示 Agent 执行的节点流转（含 KG 意图分析、KG 检索等新节点）
-- **Sidebar 流程图**：15 节点 SVG 交互式状态图，运行节点实时高亮，显示当前激活节点
-- **会话历史**：按会话陈列，点击加载历史消息，支持新建会话
-- **知识库管理**：拖拽上传（PDF/MD/TXT），查看/删除已索引文档
+- **Agent 流式对话**：SSE 逐字渲染，支持引文标注（[N] 悬停/点击查看来源段落）
+- **8 个策略开关**：联网搜索、自反思、重排序、文档评估、查询重写、BM25 检索、Multi-Query 检索、知识图谱检索，实时切换
+- **Sidebar 流程图**：SVG 交互式状态图，含精准缓存/语义缓存/输出回放/缓存写入虚拟节点，命中/未命中箭头与节点耗时实时展示
+- **会话历史**：服务端持久化，侧边栏会话列表由 `GET /chat/sessions` 加载，删除会话同步清除后端数据
+- **知识库管理**：拖拽上传（PDF/MD/TXT/DOCX/CSV），查看/删除已索引文档，上传任务状态实时跟踪
 - **实时健康监控**：顶部栏显示服务状态，30 秒自动刷新
+
+## 缓存与可观测性
+
+### 多级缓存
+
+- **精准缓存**：规范化问题（NFKC + 小写 + 空白折叠）+ 策略配置签名精确匹配，秒级命中
+- **语义缓存**：问题向量余弦相似度 ≥ `CACHE_SEMANTIC_THRESHOLD`（默认 0.92）命中
+- **向量复用**：语义缓存阶段计算的问题向量经 `AgentState.query_embedding` 传入图内，检索/MMR 直接复用，不重复调用 Embedding
+- **写回条件**：反射关闭或幻觉检测通过且答案非空；命中时回放存储的答案/来源/路径/幻觉结果，零 LLM 调用
+- **生命周期**：LRU 容量上限（`CACHE_MAX_ENTRIES`）+ 可选 TTL；删除文档、同名文档更新内容时按 doc_id 精确失效相关条目
+
+### 可观测性
+
+- `/metrics`：Prometheus 指标（请求数、缓存命中 `{type=exact|semantic}`、LLM/Embedding 调用数、耗时直方图、上传统计）
+- `/health`：逐组件健康明细（chroma/state_db/cache/kg/config），`?deep=true` 额外做 Embedding 探针
+- 日志：JSON 结构化行格式，`log/app.log` 滚动（10MB × 5），异常堆栈完整保留在 `exc_info` 字段
 
 ## 项目结构
 
@@ -364,23 +377,27 @@ agentic-rag/
 ├── pyproject.toml             # Python 项目配置（UV 包管理）
 ├── .env                       # 环境变量（需自行创建）
 ├── src/                       # 后端源码
-│   ├── main.py                # FastAPI 应用入口
+│   ├── main.py                # FastAPI 应用入口（日志/健康/指标/生命周期）
 │   ├── config/settings.py     # Pydantic Settings 配置
+│   ├── config/validation.py   # 启动配置校验（错误含当前值/原因/位置/修复）
 │   ├── api/                   # API 路由与依赖注入
 │   │   ├── router.py          # 主路由聚合
 │   │   ├── dependencies.py    # 依赖注入（Service/KG 单例）
 │   │   ├── chat.py            # 对话 API
 │   │   └── documents.py       # 文档管理 API
 │   ├── models/                # Pydantic 请求/响应模型
-│   │   ├── chat.py            # 对话模型（含 enable_kg 等 12 个开关）
+│   │   ├── chat.py            # 对话模型（策略开关 + use_cache）
 │   │   ├── document.py        # 文档模型
 │   │   └── common.py          # 通用模型
 │   ├── agent/                 # LangGraph Agent
-│   │   ├── state.py           # AgentState 定义（含 kg_intent/kg_context 等 25 字段）
-│   │   ├── graph.py           # StateGraph 构建 + 条件路由 + Send fan-out/fan-in
-│   │   ├── nodes.py           # 15 个核心节点实现
+│   │   ├── state.py           # AgentState 定义（含 query_embedding/kg_intent 等）
+│   │   ├── graph.py           # StateGraph 构建 + 条件路由
+│   │   ├── nodes.py           # 图内节点实现（并行检索合并、评估、生成等）
 │   │   ├── prompts.py         # Prompt 模板（含 KG 意图分析、实体抽取等）
 │   │   └── tools.py           # Tool Calling（DuckDuckGo 搜索）
+│   ├── cache/                 # 多级缓存（精准 + 语义）
+│   │   ├── service.py         # 缓存编排（lookup/store/replay/invalidate）
+│   │   └── storage.py         # SQLite 持久化 + numpy 内存向量索引
 │   ├── knowledge_graph/       # 知识图谱模块（Kuzu + numpy）
 │   │   ├── __init__.py        # 单例工厂函数
 │   │   ├── graph_store.py     # Kuzu 图数据库（原生持久化）
@@ -388,22 +405,31 @@ agentic-rag/
 │   │   ├── graph_retriever.py # 实体链接（numpy 语义搜索）+ 子图提取 + 路径推理
 │   │   └── kg_intent.py       # LLM 问题意图分析路由
 │   ├── backend/               # AI 后端客户端
-│   │   ├── llm.py             # ChatOpenAI 工厂（fast/strong/generic 三档）
+│   │   ├── llm.py             # ChatOpenAI 工厂（重试/计数/客户端复用）
 │   │   ├── embedding.py       # DashScopeEmbeddings 工厂
 │   │   └── reranker.py        # 百炼 TextReRank 重排序
+│   ├── metrics.py             # Prometheus 指标定义
 │   ├── retrieval/             # 检索策略
 │   │   └── bm25.py            # BM25 关键词检索（jieba 分词）
 │   ├── pipeline/              # 文档处理管道
-│   │   ├── loader.py          # 多格式加载器（PDF/MD/TXT）
+│   │   ├── loader.py          # 多格式加载器（PDF/MD/TXT/DOCX/CSV）
 │   │   ├── chunker.py         # 文本分块
 │   │   └── indexer.py         # 文档索引器（含自动 KG 构建）
 │   ├── store/                 # 数据存储
-│   │   └── vector_store.py    # ChromaDB 封装（含文档元数据查询）
+│   │   ├── vector_store.py    # ChromaDB 封装（含文档元数据查询）
+│   │   └── state_store.py     # 会话历史/上传任务 SQLite 持久化
 │   ├── memory/                # 对话记忆
-│   │   └── manager.py         # 多会话隔离 + 滑动窗口
+│   │   └── manager.py         # 多会话隔离 + 滑动窗口 + 持久化恢复
 │   └── services/              # 业务服务层
-│       ├── rag_service.py     # RAG 对话服务（含流式处理、KG 字段初始化）
-│       └── document_service.py # 文档管理服务
+│       ├── rag_service.py     # RAG 对话服务（流式 + 缓存虚拟节点 + 图编排）
+│       ├── document_service.py # 文档管理服务（有界索引队列）
+│       ├── generator.py       # 生成节点（引文标注 + 流式输出）
+│       └── hallucination_checker.py # 幻觉检测
+├── tests/                     # pytest 测试（数据隔离，33 个用例）
+├── Dockerfile                 # 后端容器镜像
+├── docker-compose.yml         # 后端 + 前端（nginx 反代）编排
+├── front/Dockerfile           # 前端容器镜像（node 构建 → nginx）
+├── front/nginx.conf           # nginx 静态托管 + /api 反代配置
 ├── eval/                      # LangSmith 评估
 │   ├── run_eval.py            # 评估脚本（支持 --enable-kg 等参数）
 │   ├── v1/                    # v1：基础 RAG 评估
@@ -427,23 +453,25 @@ agentic-rag/
 │       │   ├── documents.ts   # 文档 API
 │       │   └── health.ts      # 健康检查 API
 │       ├── composables/       # Vue 组合式函数
-│       │   ├── useChat.ts     # 对话状态（含 enable_kg 等 9 个策略开关参数）
-│       │   ├── agentFlowState.ts # Agent 流程状态（9 个策略开关 ref）
+│       │   ├── useChat.ts     # 对话状态（服务端会话 + SSE 解析）
+│       │   ├── agentFlowState.ts # Agent 流程状态（8 个策略开关 ref）
 │       │   ├── useDocuments.ts # 文档管理
 │       │   └── useHealth.ts   # 健康状态轮询
 │       ├── views/             # 页面视图
 │       │   ├── ChatView.vue   # 对话页
 │       │   └── DocumentsView.vue # 知识库页
 │       └── components/        # 组件
-│           ├── layout/        # AppLayout + Sidebar（15 节点 SVG 流程图）
+│           ├── layout/        # AppLayout + Sidebar（SVG 流程图含缓存节点）
 │           ├── common/        # HealthBar
-│           ├── chat/          # ChatPanel, ChatInput, MessageBubble, SourcePanel, AgentPathBadge, SessionHistory
+│           ├── chat/          # ChatPanel, ChatInput, MessageBubble, SourcePanel, SessionHistory
 │           └── documents/     # DocumentUpload, DocumentList
-├── data/                      # 本地数据存储（自动生成）
+├── data/                      # 本地数据存储（自动生成，已被 .gitignore 排除）
 │   ├── chroma/                # ChromaDB 持久化数据
-│   ├── kg/                    # Kuzu 图数据库 + 实体向量索引 .npz
-│   └── temp_uploads/          # 大文件临时缓存
-└── chroma_data/               # （旧，已迁移到 data/chroma）
+│   ├── kg/                    # Kuzu 图数据库
+│   ├── cache/cache.db         # 多级缓存
+│   ├── state/state.db         # 会话历史 / 上传任务
+│   └── temp_uploads/          # 大文件上传中转（自动清理）
+└── log/                       # 滚动日志（log/app.log，10MB × 5）
 ```
 
 ## 依赖
@@ -453,7 +481,7 @@ agentic-rag/
 | 包 | 用途 |
 |------|------|
 | `fastapi` + `uvicorn` | Web 框架与服务器 |
-| `langgraph` | Agent 状态图编排 + Send fan-out/fan-in |
+| `langgraph` | Agent 状态图编排 + 条件路由 |
 | `langchain` + `langchain-openai` + `langchain-chroma` + `langchain-community` | RAG 组件链 |
 | `chromadb` | 向量数据库（本地持久化，文档元数据一同存储） |
 | `kuzu` | 图数据库（知识图谱存储，原生持久化） |
@@ -470,7 +498,14 @@ agentic-rag/
 | `tenacity` | LLM 调用指数退避重试 |
 | `tiktoken` | Token 计数与分块 |
 | `python-dotenv` | 环境变量加载 |
-| `mistune` | Markdown 解析 |
+| `prometheus-client` | Prometheus 指标（`/metrics` 导出，纯 Python） |
+| `sqlite3`（标准库） | 多级缓存 / 会话历史 / 上传任务持久化，无需独立部署数据库 |
+
+### 后端开发依赖
+
+| 包 | 用途 |
+|------|------|
+| `pytest` | 自动化测试（`tests/`，33 个用例） |
 
 ### 前端 (Node.js)
 
