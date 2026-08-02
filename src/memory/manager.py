@@ -32,8 +32,10 @@ class MemoryManager:
     def __init__(self):
         self._sessions: dict[str, SessionMemory] = {}
         self._window_size = settings.memory_window_size
+        self._msg_cap = settings.session_message_cap
         self._store = get_runtime_state_store()
-        logger.info("MemoryManager 初始化: window_size=%d", self._window_size)
+        logger.info("MemoryManager 初始化: window_size=%d, msg_cap=%d",
+                    self._window_size, self._msg_cap)
 
     def _get_session(self, session_id: str) -> SessionMemory:
         """获取或创建指定会话"""
@@ -41,7 +43,10 @@ class MemoryManager:
             self._sessions[session_id] = SessionMemory()
             # 从持久化存储懒加载历史（重启后恢复）
             try:
-                for msg in self._store.get_messages(session_id):
+                # 只加载最近 cap 条，避免会话历史无界占用内存
+                for msg in self._store.get_messages(
+                    session_id, limit=self._msg_cap
+                ):
                     self._sessions[session_id].add_message(
                         msg["role"], msg["content"], msg.get("hallucination")
                     )
@@ -78,6 +83,10 @@ class MemoryManager:
         try:
             self._store.add_message(session_id, "user", user_query)
             self._store.add_message(session_id, "assistant", assistant_answer)
+            # 超出上限时裁剪最旧消息（内存 + 库同步）
+            if self._msg_cap > 0 and len(session.messages) > self._msg_cap:
+                session.messages = session.messages[-self._msg_cap:]
+                self._store.trim_session(session_id, self._msg_cap)
         except Exception as e:
             logger.warning("会话历史持久化失败（不影响对话）: %s", e)
         logger.info("记录对话: session=%s, query_len=%d, answer_len=%d, total_msgs=%d",

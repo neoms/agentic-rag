@@ -11,7 +11,7 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.config.settings import settings
@@ -171,6 +171,19 @@ class RuntimeStateStore:
             )
             self._conn.commit()
 
+    def trim_session(self, session_id: str, keep: int) -> None:
+        """单会话仅保留最近 keep 条消息，删除更早的旧消息"""
+        if keep <= 0:
+            return
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM chat_messages WHERE id IN ("
+                "SELECT id FROM chat_messages WHERE session_id = ? "
+                "ORDER BY id DESC LIMIT -1 OFFSET ?)",
+                (session_id, keep),
+            )
+            self._conn.commit()
+
     # ==================== 上传任务 ====================
 
     def upsert_task(self, task: dict) -> None:
@@ -213,7 +226,7 @@ class RuntimeStateStore:
     def list_tasks(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM upload_tasks ORDER BY created_at DESC"
+                "SELECT * FROM upload_tasks ORDER BY created_at DESC, rowid DESC"
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -229,6 +242,45 @@ class RuntimeStateStore:
             )
             self._conn.commit()
             return cur.rowcount
+
+    def prune_tasks(self, keep: int, ttl_days: int = 0) -> None:
+        """清理历史任务：仅保留最新 keep 条；完成/失败超过 ttl_days 天的删除
+
+        TTL 在 Python 侧解析 ISO 时间比较（SQLite 的 datetime 函数无法处理
+        带时区偏移的 ISO 字符串）。
+        """
+        with self._lock:
+            # 1) 条数上限：保留最新 keep 条
+            self._conn.execute(
+                "DELETE FROM upload_tasks WHERE task_id NOT IN ("
+                "SELECT task_id FROM upload_tasks "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (keep,),
+            )
+            # 2) TTL：删除完成/失败超过 ttl_days 天的任务
+            if ttl_days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+                rows = self._conn.execute(
+                    "SELECT task_id, completed_at, created_at FROM upload_tasks "
+                    "WHERE status IN ('completed', 'failed')"
+                ).fetchall()
+                stale: list[str] = []
+                for r in rows:
+                    ts = r["completed_at"] or r["created_at"]
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue
+                    if dt < cutoff:
+                        stale.append(r["task_id"])
+                if stale:
+                    self._conn.executemany(
+                        "DELETE FROM upload_tasks WHERE task_id = ?",
+                        [(s,) for s in stale],
+                    )
+            self._conn.commit()
 
 
 # 全局单例（懒加载）

@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     # ========== 运行时状态（会话历史 / 上传任务） ==========
     state_db_path: str = "data/state/state.db"
 
+    # ========== 数据保留策略（防无界增长） ==========
+    session_message_cap: int = 500    # 单会话最多保留的消息条数（内存 + 库，超出删除最旧）
+    task_history_keep: int = 100      # 上传任务保留条数（超出删除最旧）
+    task_history_ttl_days: int = 7    # 已完成/失败任务的保留天数（0 = 仅按条数限制）
+
     @property
     def allowed_extensions_list(self) -> list[str]:
         return [ext.strip().lower() for ext in self.allowed_extensions.split(",")]

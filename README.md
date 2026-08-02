@@ -54,6 +54,9 @@ cp .env.example .env
 | `KG_MAX_HOPS` | KG 子图最大跳数 | `2` |
 | `KG_MAX_ENTITIES` | 单次查询最多实体数 | `10` |
 | `CORS_ALLOWED_ORIGINS` | CORS 允许来源（逗号分隔多个） | `http://localhost:3000` |
+| `SESSION_MESSAGE_CAP` | 单会话最多保留消息条数（内存 + 库） | `500` |
+| `TASK_HISTORY_KEEP` | 上传任务保留条数（超出删除最旧） | `100` |
+| `TASK_HISTORY_TTL_DAYS` | 已完成/失败任务保留天数（0 = 仅按条数限制） | `7` |
 
 LangSmith 追踪（可选）：
 

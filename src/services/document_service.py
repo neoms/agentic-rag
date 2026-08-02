@@ -38,8 +38,12 @@ class DocumentService:
         self._restore_tasks()
 
     def _restore_tasks(self):
-        """启动时恢复任务表：未完成任务标记中断，其余载入内存"""
+        """启动时恢复任务表：先清理历史任务，未完成任务标记中断，其余载入内存"""
         try:
+            self._store.prune_tasks(
+                keep=settings.task_history_keep,
+                ttl_days=settings.task_history_ttl_days,
+            )
             interrupted = self._store.mark_interrupted_tasks()
             for task in self._store.list_tasks():
                 self._tasks[task["task_id"]] = task
@@ -48,6 +52,18 @@ class DocumentService:
             logger.info("从持久化恢复 %d 个上传任务", len(self._tasks))
         except Exception as e:
             logger.warning("上传任务持久化恢复失败（不影响使用）: %s", e)
+
+    def _prune_tasks(self):
+        """惰性清理历史任务并同步内存（失败仅告警）"""
+        try:
+            self._store.prune_tasks(
+                keep=settings.task_history_keep,
+                ttl_days=settings.task_history_ttl_days,
+            )
+            with self._lock:
+                self._tasks = {t["task_id"]: t for t in self._store.list_tasks()}
+        except Exception as e:
+            logger.warning("任务清理失败（不影响使用）: %s", e)
 
     def _persist_task(self, task_id: str):
         """将当前任务状态快照写入持久化存储（失败仅告警）"""
@@ -184,6 +200,9 @@ class DocumentService:
             logger.info("大文件已暂存到临时文件: %s (%.1f MB)", tmp_path, size / 1024 / 1024)
         else:
             file_source = file_bytes
+
+        # 惰性清理历史任务（新任务已落库，重建内存任务表）
+        self._prune_tasks()
 
         thread = threading.Thread(
             target=self._background_process,
