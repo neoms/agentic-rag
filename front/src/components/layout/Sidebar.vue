@@ -91,7 +91,9 @@ function cacheNodeState(id: string): NodeState | null {
   if (!info || typeof info.output !== 'object' || info.output === null) return null
   const out = info.output as Record<string, unknown>
   const checked = id === 'cache_exact' ? out.exact_checked : out.semantic_checked
-  return checked ? 'done' : 'skipped'
+  // 该层未执行（如精准命中后语义层无需运行）→ 回落默认状态，
+  // 与其他未被调度到的节点一致显示为"待执行"
+  return checked ? 'done' : null
 }
 
 function cacheBadgeText(id: string): string {
@@ -101,7 +103,8 @@ function cacheBadgeText(id: string): string {
   const out = info.output as Record<string, unknown>
   const hit = id === 'cache_exact' ? out.exact_hit : out.semantic_hit
   const checked = id === 'cache_exact' ? out.exact_checked : out.semantic_checked
-  if (checked !== true) return '跳过'
+  // 该层未执行 → 不显示命中/未中徽标（节点保持单行"待执行"样式）
+  if (checked !== true) return ''
   return hit ? '命中' : '未中'
 }
 
@@ -109,7 +112,6 @@ function cacheBadgeColor(id: string): string {
   const text = cacheBadgeText(id)
   if (text === '命中') return '#34d399'
   if (text === '未中') return '#94a3b8'
-  if (text === '跳过') return '#f59e0b'
   return ''
 }
 
