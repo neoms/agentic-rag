@@ -113,6 +113,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+> 启动时会自动校验关键配置：配置缺失/越界/不自洽会拒绝启动，并在日志中逐项说明
+> 当前值、原因、修改位置和正确的写法（见 `src/config/validation.py`）。
+
 - 前端：http://localhost:8080（nginx 托管静态文件并反代 `/api`、`/health` 到后端）
 - 后端健康检查：http://localhost:8080/health
 - Prometheus 指标：http://localhost:8080/metrics

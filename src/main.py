@@ -12,6 +12,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from src.api.router import api_router
 from src.models.common import HealthResponse, ErrorResponse
 from src.config.settings import settings
+from src.config.validation import validate_settings, format_issues
 from src.store.vector_store import vector_store
 from src.services.document_service import document_service
 
@@ -74,6 +75,14 @@ async def lifespan(app: FastAPI):
     logger.info("LLM 模型: %s", settings.llm_model)
     logger.info("Embedding 模型: %s", settings.embedding_model)
     logger.info("ChromaDB 持久化路径: %s", settings.chroma_persist_dir_path)
+
+    # 启动配置校验：配置错误时明确说明原因/位置/修复方式并拒绝启动（fail fast）
+    config_issues = validate_settings(settings)
+    if config_issues:
+        msg = format_issues(config_issues)
+        logger.error(msg)
+        raise RuntimeError("启动配置校验失败，详见上方日志")
+
     # 清理崩溃残留的临时上传文件（启动瞬间无在途任务，清空安全）
     try:
         temp_dir = settings.project_root / "data" / "temp_uploads"
