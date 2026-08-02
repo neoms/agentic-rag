@@ -7,7 +7,7 @@
 - **多策略并行检索**：语义检索 + MMR 多样性、BM25 关键词、HyDE 假设文档嵌入、Multi-Query 多角度查询，通过 LangGraph Send API 实现 fan-out/fan-in 并行执行，可独立开关控制
 - **知识图谱模块**：Kuzu 图数据库（原生持久化）+ numpy .npz 二进制向量索引，LLM 自动抽取实体关系构建图谱，支持意图分析路由、实体链接、子图提取、多跳路径推理，不适用时平滑降级到原有 RAG 流程
 - **重排序精排**：LLM Cross-Encoder 对检索结果二次排序，提升 Top-K 文档质量
-- **Agent 智能体**：自反思能力（文档评估 → 查询重写 → 幻觉检测）；支持 Tool Calling（联网搜索、计算器）
+- **Agent 智能体**：自反思能力（文档评估 → 查询重写 → 幻觉检测）；支持 Tool Calling（联网搜索）
 - **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
 - **LangSmith 评估**：8 维度自动化评估流水线（正确性/忠实度/相关性/完整性/上下文精度/延迟等），版本化目录管理（v1/v2）
 - **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
@@ -317,7 +317,7 @@ agentic-rag/
 │   │   ├── graph.py           # StateGraph 构建 + 条件路由 + Send fan-out/fan-in
 │   │   ├── nodes.py           # 15 个核心节点实现
 │   │   ├── prompts.py         # Prompt 模板（含 KG 意图分析、实体抽取等）
-│   │   └── tools.py           # Tool Calling（计算器 + DuckDuckGo 搜索）
+│   │   └── tools.py           # Tool Calling（DuckDuckGo 搜索）
 │   ├── knowledge_graph/       # 知识图谱模块（Kuzu + numpy）
 │   │   ├── __init__.py        # 单例工厂函数
 │   │   ├── graph_store.py     # Kuzu 图数据库（原生持久化）
