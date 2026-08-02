@@ -247,3 +247,7 @@ class CacheService:
 
     def clear(self) -> None:
         self._storage.clear()
+
+    def close(self) -> None:
+        """关闭缓存存储连接（服务关闭时调用）"""
+        self._storage.close()

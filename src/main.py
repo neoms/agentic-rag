@@ -28,6 +28,19 @@ async def lifespan(app: FastAPI):
     logger.info("LLM 模型: %s", settings.llm_model)
     logger.info("Embedding 模型: %s", settings.embedding_model)
     logger.info("ChromaDB 持久化路径: %s", settings.chroma_persist_dir_path)
+    # 清理崩溃残留的临时上传文件（启动瞬间无在途任务，清空安全）
+    try:
+        temp_dir = settings.project_root / "data" / "temp_uploads"
+        if temp_dir.exists():
+            removed = 0
+            for f in temp_dir.iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+                    removed += 1
+            if removed:
+                logger.info("已清理临时上传目录 %d 个残留文件", removed)
+    except Exception as e:
+        logger.warning("临时文件清理失败: %s", e)
     try:
         stats = vector_store.get_collection_stats()
         logger.info("向量集合: %s, 文档数: %d", stats["name"], stats["count"])
@@ -35,6 +48,19 @@ async def lifespan(app: FastAPI):
         logger.warning("ChromaDB 初始化失败")
     yield
     document_service.shutdown(wait=True)
+    # 关闭已初始化的 SQLite 连接（懒加载单例未创建则跳过）
+    try:
+        from src.store import state_store as state_store_mod
+        if state_store_mod._store is not None:
+            state_store_mod._store.close()
+    except Exception as e:
+        logger.warning("state_db 关闭异常: %s", e)
+    try:
+        from src.cache import _service as cache_svc
+        if cache_svc is not None:
+            cache_svc.close()
+    except Exception as e:
+        logger.warning("cache_db 关闭异常: %s", e)
     logger.info("Agentic RAG 服务关闭")
 
 
@@ -96,7 +122,7 @@ async def health(deep: bool = False):
     try:
         from src.cache import get_cache_service
         cache_stats = get_cache_service().stats()
-        checks["cache"] = f"ok (entries={cache_stats.get('entries', '?')})"
+        checks["cache"] = f"ok (entries={cache_stats.get('total', '?')})"
     except Exception as e:
         checks["cache"] = f"error: {e}"
 

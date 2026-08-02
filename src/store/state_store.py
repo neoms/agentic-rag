@@ -282,6 +282,16 @@ class RuntimeStateStore:
                     )
             self._conn.commit()
 
+    def close(self) -> None:
+        """关闭 SQLite 连接（WAL checkpoint + 释放句柄）"""
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._conn.close()
+            logger.info("RuntimeStateStore: 已关闭 db=%s", self._db_path)
+
 
 # 全局单例（懒加载）
 _store: RuntimeStateStore | None = None

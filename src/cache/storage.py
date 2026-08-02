@@ -511,3 +511,13 @@ class CacheStorage:
             self._conn.commit()
             self._load_index()
             logger.info("CacheStorage: 已清空全部缓存")
+
+    def close(self) -> None:
+        """关闭 SQLite 连接（WAL checkpoint + 释放句柄）"""
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._conn.close()
+            logger.info("CacheStorage: 已关闭 db=%s", self._db_path)
