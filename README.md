@@ -57,6 +57,8 @@ cp .env.example .env
 | `SESSION_MESSAGE_CAP` | 单会话最多保留消息条数（内存 + 库） | `500` |
 | `TASK_HISTORY_KEEP` | 上传任务保留条数（超出删除最旧） | `100` |
 | `TASK_HISTORY_TTL_DAYS` | 已完成/失败任务保留天数（0 = 仅按条数限制） | `7` |
+| `INDEX_WORKERS` | 后台索引并发 worker 数 | `2` |
+| `INDEX_QUEUE_MAX` | 排队任务上限（超出拒绝上传） | `20` |
 
 LangSmith 追踪（可选）：
 

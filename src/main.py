@@ -10,6 +10,7 @@ from src.api.router import api_router
 from src.models.common import HealthResponse, ErrorResponse
 from src.config.settings import settings
 from src.store.vector_store import vector_store
+from src.services.document_service import document_service
 
 # 配置日志
 logging.basicConfig(
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("ChromaDB 初始化失败")
     yield
+    document_service.shutdown(wait=True)
     logger.info("Agentic RAG 服务关闭")
 
 

@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     task_history_keep: int = 100      # 上传任务保留条数（超出删除最旧）
     task_history_ttl_days: int = 7    # 已完成/失败任务的保留天数（0 = 仅按条数限制）
 
+    # ========== 文档索引后台队列 ==========
+    index_workers: int = 2            # 后台索引并发 worker 数
+    index_queue_max: int = 20         # 排队任务上限（超出拒绝上传，防成本/资源滥用）
+
     @property
     def allowed_extensions_list(self) -> list[str]:
         return [ext.strip().lower() for ext in self.allowed_extensions.split(",")]

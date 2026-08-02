@@ -3,7 +3,7 @@
 import logging
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from src.api.dependencies import get_document_service
-from src.services.document_service import DocumentService
+from src.services.document_service import DocumentService, QueueFullError
 from src.models.document import (
     DocumentUploadResponse,
     DocumentListResponse,
@@ -56,7 +56,11 @@ async def upload_document(
     logger.info("文件已读取: %s, size=%d bytes", file.filename, len(content))
 
     # 提交后台任务（内容校验已在 loader.validate_content 中处理）
-    result = service.submit_upload_task(content, file.filename)
+    try:
+        result = service.submit_upload_task(content, file.filename)
+    except QueueFullError as e:
+        logger.warning("上传被拒绝（索引队列已满）: filename=%s", file.filename)
+        raise HTTPException(status_code=429, detail=str(e)) from e
     logger.info("API 响应: POST /documents/upload → task_id=%s, status=%s",
                 result.task_id, result.status)
     return result

@@ -8,6 +8,7 @@ import logging
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 TEMP_UPLOAD_DIR = "data/temp_uploads"
 
 
+class QueueFullError(Exception):
+    """索引任务队列已满，拒绝接受新的上传"""
+
+
 class DocumentService:
     """文档管理服务"""
 
@@ -36,6 +41,19 @@ class DocumentService:
         self._lock = threading.Lock()
         self._store = get_runtime_state_store()
         self._restore_tasks()
+        # 有界 worker 池：并发受 index_workers 限制，排队受 index_queue_max 限制
+        self._executor = ThreadPoolExecutor(
+            max_workers=settings.index_workers,
+            thread_name_prefix="doc-index",
+        )
+        self._queue_sem = threading.BoundedSemaphore(
+            settings.index_workers + settings.index_queue_max
+        )
+        logger.info(
+            "DocumentService 索引队列: workers=%d, queue_max=%d",
+            settings.index_workers,
+            settings.index_queue_max,
+        )
 
     def _restore_tasks(self):
         """启动时恢复任务表：先清理历史任务，未完成任务标记中断，其余载入内存"""
@@ -73,6 +91,19 @@ class DocumentService:
             self._store.upsert_task(task)
         except Exception as e:
             logger.warning("任务状态持久化失败 task_id=%s: %s", task_id, e)
+
+    def _worker_wrapper(
+        self,
+        file_source: bytes | Path,
+        filename: str,
+        doc_id: str,
+        task_id: str,
+    ):
+        """worker 池执行入口：任务结束后释放队列信号量"""
+        try:
+            self._background_process(file_source, filename, doc_id, task_id)
+        finally:
+            self._queue_sem.release()
 
     @property
     def _temp_dir(self) -> Path:
@@ -179,37 +210,46 @@ class DocumentService:
                 self._cleanup_temp(tmp_path)
 
     def submit_upload_task(self, file_bytes: bytes, filename: str) -> TaskSubmitResponse:
-        """提交文档上传任务（异步后台处理）
+        """提交文档上传任务（有界队列异步处理）
 
         大文件自动保存到临时目录后后台处理，释放内存。
         小文件直接传递 bytes 避免磁盘 I/O。
 
-        立即返回任务信息，实际处理在后台线程进行。
+        立即返回任务信息，实际处理由 worker 池执行；队列已满时抛出
+        QueueFullError（路由层转为 HTTP 429）。
         """
         size = len(file_bytes)
         logger.info("[document_service] 提交后台任务: %s, size=%d bytes", filename, size)
-        task_id, doc_id = self._init_task(filename)
 
-        is_large = self._is_large_file(size)
-        if is_large:
-            # 大文件：保存到临时文件，传递路径
-            tmp_path = self._save_to_temp(file_bytes, filename)
-            file_source: bytes | Path = tmp_path
-            # 释放内存引用
-            del file_bytes
-            logger.info("大文件已暂存到临时文件: %s (%.1f MB)", tmp_path, size / 1024 / 1024)
-        else:
-            file_source = file_bytes
+        # 队列有界：获取信号量失败直接拒绝（不创建任务记录）
+        if not self._queue_sem.acquire(blocking=False):
+            raise QueueFullError(
+                f"索引队列已满（最多排队 {settings.index_queue_max} 个任务），请稍后重试"
+            )
 
-        # 惰性清理历史任务（新任务已落库，重建内存任务表）
-        self._prune_tasks()
+        try:
+            task_id, doc_id = self._init_task(filename)
 
-        thread = threading.Thread(
-            target=self._background_process,
-            args=(file_source, filename, doc_id, task_id),
-            daemon=True,
-        )
-        thread.start()
+            is_large = self._is_large_file(size)
+            if is_large:
+                # 大文件：保存到临时文件，传递路径
+                tmp_path = self._save_to_temp(file_bytes, filename)
+                file_source: bytes | Path = tmp_path
+                # 释放内存引用
+                del file_bytes
+                logger.info("大文件已暂存到临时文件: %s (%.1f MB)", tmp_path, size / 1024 / 1024)
+            else:
+                file_source = file_bytes
+
+            # 惰性清理历史任务（新任务已落库，重建内存任务表）
+            self._prune_tasks()
+
+            self._executor.submit(
+                self._worker_wrapper, file_source, filename, doc_id, task_id,
+            )
+        except BaseException:
+            self._queue_sem.release()
+            raise
 
         return TaskSubmitResponse(
             task_id=task_id,
@@ -218,6 +258,11 @@ class DocumentService:
             status=TaskStatus.PENDING,
             message=f"文档 {filename} 已提交后台处理",
         )
+
+    def shutdown(self, wait: bool = True) -> None:
+        """优雅关闭：等待在途索引任务完成，取消排队任务"""
+        logger.info("DocumentService 关闭: 等待后台索引任务完成...")
+        self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def upload_document(self, file_bytes: bytes, filename: str) -> DocumentUploadResponse:
         """上传并索引一个文档（同步方式）"""
