@@ -2,7 +2,7 @@
 
 import logging
 import json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import get_rag_service
@@ -69,7 +69,7 @@ async def stream_chat(
     summary="获取会话历史",
 )
 async def get_history(
-    session_id: str,
+    session_id: str = Path(..., max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
     service: RAGService = Depends(get_rag_service),
 ):
     logger.info("API 请求: GET /chat/history/%s", session_id)
@@ -94,7 +94,7 @@ async def list_sessions(
     summary="删除会话历史（含持久化数据）",
 )
 async def delete_history(
-    session_id: str,
+    session_id: str = Path(..., max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
     service: RAGService = Depends(get_rag_service),
 ):
     logger.info("API 请求: DELETE /chat/history/%s", session_id)

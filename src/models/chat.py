@@ -6,7 +6,12 @@ from pydantic import BaseModel, Field
 class AgenticChatRequest(BaseModel):
     """流式 Agent 对话请求"""
     query: str = Field(..., min_length=1, description="用户问题")
-    session_id: str = Field(default="default", description="会话 ID")
+    session_id: str = Field(
+        default="default",
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="会话 ID（1-64 位字母/数字/下划线/连字符）",
+    )
     use_cache: bool = True  # 是否启用多级缓存（评估/调试时可绕过）
     enable_web_search: bool = False
     enable_reflection: bool = True

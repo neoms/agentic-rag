@@ -41,7 +41,8 @@ export function useChat() {
   // —— 辅助函数 ——
 
   function generateSessionId(): string {
-    return crypto.randomUUID().slice(0, 8)
+    // 完整 UUID（122 位熵），避免 8 位短 id 被枚举猜测
+    return crypto.randomUUID()
   }
 
   async function refreshSessions(): Promise<void> {
