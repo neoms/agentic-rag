@@ -102,11 +102,56 @@ npm run build     # 构建生产包到 front/dist/
 
 前端运行在 http://localhost:3000。
 
+### 4. Docker 部署（推荐）
+
+```bash
+# 1. 准备环境变量（至少填写 DASHSCOPE_API_KEY）
+cp .env.example .env
+# 编辑 .env 填入 API Key 与模型配置
+
+# 2. 构建并启动（前端 nginx 反代后端，访问 http://localhost:8080）
+docker compose up -d --build
+```
+
+- 前端：http://localhost:8080（nginx 托管静态文件并反代 `/api`、`/health` 到后端）
+- 后端健康检查：http://localhost:8080/health
+- Prometheus 指标：http://localhost:8080/metrics
+
+### 数据持久化与备份
+
+所有数据落在命名卷 `agentic_rag_data`（挂载到容器 `/app/data`）：
+
+| 目录/文件 | 内容 |
+|------|------|
+| `chroma/` | 向量库（文档块 + 元数据） |
+| `kg/kuzu_db/` | 知识图谱 |
+| `state/state.db` | 会话历史 / 上传任务 |
+| `cache/cache.db` | 多级缓存（精准 + 语义） |
+| `temp_uploads/` | 上传中转（自动清理，无需备份） |
+
+备份：
+
+```bash
+docker run --rm -v agentic_rag_data:/data -v "$PWD":/backup \
+  alpine tar czf /backup/agentic-rag-data-$(date +%F).tar.gz -C / data
+```
+
+恢复：
+
+```bash
+docker run --rm -v agentic_rag_data:/data -v "$PWD":/backup \
+  alpine sh -c "rm -rf /data/* && tar xzf /backup/agentic-rag-data-2026-XX-XX.tar.gz -C /"
+docker compose restart backend
+```
+
+注意：备份前建议先 `docker compose stop backend` 保证文件一致；向量库、图库、缓存需整体备份（三者内部互相引用 doc_id）。
+
 ## API 接口
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查（逐组件明细；`?deep=true` 额外做 Embedding 探针） |
+| GET | `/metrics` | Prometheus 指标（文本格式，供采集器抓取） |
 | POST | `/api/v1/documents/upload` | 上传文档（PDF/MD/TXT，最大 10MB） |
 | GET | `/api/v1/documents` | 列出已索引文档 |
 | DELETE | `/api/v1/documents/{doc_id}` | 删除文档及其向量块 |

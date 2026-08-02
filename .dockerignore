@@ -1,0 +1,11 @@
+.git
+.venv
+data
+log
+__pycache__
+*.pyc
+.codebuddy
+eval
+front/node_modules
+front/dist
+*.log
