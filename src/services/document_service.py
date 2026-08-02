@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config.settings import settings
+from src.cache import get_cache_service
 from src.pipeline.indexer import document_indexer
 from src.models.document import (
     DocumentInfo,
@@ -212,9 +213,19 @@ class DocumentService:
         ]
 
     def delete_document(self, doc_id: str) -> int:
-        """删除指定文档及其所有向量块"""
+        """删除指定文档及其所有向量块，并精确失效引用该文档的缓存"""
         logger.info("[document_service] 删除文档: %s", doc_id)
         count = document_indexer.delete_document(doc_id)
+        try:
+            invalidated = get_cache_service().invalidate_documents([doc_id])
+            if invalidated:
+                logger.info(
+                    "[document_service] 已失效引用该文档的缓存 %d 条", invalidated,
+                )
+        except Exception as e:
+            logger.warning(
+                "[document_service] 缓存失效异常（不影响文档删除）: %s", e,
+            )
         logger.info("文档 %s 已删除，移除 %d 个向量块", doc_id, count)
         return count
 

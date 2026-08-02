@@ -50,6 +50,7 @@ class CacheStorage:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
+        self._backfill_entry_docs()
         self._load_index()
         logger.info("CacheStorage 初始化: db=%s, entries=%d, max_entries=%d",
                     db_path, self._ids.size, max_entries)
@@ -86,7 +87,44 @@ class CacheStorage:
                 "CREATE INDEX IF NOT EXISTS idx_cache_last_access "
                 "ON cache_entries(last_access_at)"
             )
+            # 文档关联表：缓存条目 → 引用的 doc_id（用于删除文档时精确失效）
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_entry_docs (
+                    entry_id INTEGER NOT NULL,
+                    doc_id TEXT NOT NULL,
+                    PRIMARY KEY (entry_id, doc_id)
+                )
+                """
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entry_docs_doc_id "
+                "ON cache_entry_docs(doc_id)"
+            )
             self._conn.commit()
+
+    def _backfill_entry_docs(self) -> None:
+        """为存量缓存条目回填文档关联（幂等，INSERT OR IGNORE）"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, sources FROM cache_entries"
+            ).fetchall()
+            inserts: list[tuple[int, str]] = []
+            for row in rows:
+                try:
+                    sources = json.loads(row["sources"])
+                except (json.JSONDecodeError, TypeError):
+                    sources = []
+                for doc_id in self._extract_doc_ids(sources):
+                    inserts.append((row["id"], doc_id))
+            if inserts:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO cache_entry_docs (entry_id, doc_id) "
+                    "VALUES (?, ?)",
+                    inserts,
+                )
+                self._conn.commit()
+                logger.info("CacheStorage: 回填文档关联 %d 条", len(inserts))
 
     def _load_index(self) -> None:
         """从数据库全量重建内存语义索引"""
@@ -263,6 +301,8 @@ class CacheStorage:
             ).fetchone()
             if row is None:
                 return
+            # 同步文档关联（供删除文档时精确失效）
+            self._sync_entry_docs(row["id"], sources)
             existing_pos = self._id_pos.get(row["id"])
             if existing_pos is not None:
                 # 更新既有向量（保持原 created_at）
@@ -275,6 +315,32 @@ class CacheStorage:
                 self._append_to_index(row["id"], vec, signature, row["created_at"])
 
             self._evict_if_needed()
+
+    def invalidate_by_doc_ids(self, doc_ids: list[str]) -> int:
+        """精确失效引用任一指定 doc_id 的缓存条目
+
+        精准缓存与语义缓存共用同一存储：删除 DB 行的同时通过
+        _delete_rows 将内存语义索引对应条目标记失效。
+        """
+        with self._lock:
+            ids = [d for d in (doc_ids or []) if d]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            rows = self._conn.execute(
+                f"SELECT DISTINCT entry_id FROM cache_entry_docs "
+                f"WHERE doc_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            entry_ids = [r["entry_id"] for r in rows]
+            if not entry_ids:
+                return 0
+            self._delete_rows(entry_ids)
+            logger.info(
+                "CacheStorage: 按 doc_id 精确失效缓存 %d 条: %s",
+                len(entry_ids), sorted(set(ids)),
+            )
+            return len(entry_ids)
 
     def _evict_if_needed(self) -> None:
         """LRU 淘汰：超过上限时删除最久未访问的条目"""
@@ -297,6 +363,34 @@ class CacheStorage:
                             len(ids), count, self._max_entries)
 
     # ==================== 内部工具 ====================
+
+    @staticmethod
+    def _extract_doc_ids(sources: list) -> list[str]:
+        """从缓存条目的 sources 元数据中提取引用的 doc_id 集合"""
+        doc_ids: set[str] = set()
+        for src in sources or []:
+            if not isinstance(src, dict):
+                continue
+            meta = src.get("metadata")
+            if isinstance(meta, dict):
+                doc_id = meta.get("doc_id")
+                if doc_id:
+                    doc_ids.add(str(doc_id))
+        return sorted(doc_ids)
+
+    def _sync_entry_docs(self, entry_id: int, sources: list) -> None:
+        """重建单条缓存的文档关联（先删后插，保持与 sources 一致）"""
+        doc_ids = self._extract_doc_ids(sources)
+        self._conn.execute(
+            "DELETE FROM cache_entry_docs WHERE entry_id = ?", (entry_id,)
+        )
+        if doc_ids:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO cache_entry_docs (entry_id, doc_id) "
+                "VALUES (?, ?)",
+                [(entry_id, d) for d in doc_ids],
+            )
+        self._conn.commit()
 
     def _append_to_index(
         self,
@@ -340,6 +434,10 @@ class CacheStorage:
         with self._lock:
             self._conn.executemany(
                 "DELETE FROM cache_entries WHERE id = ?",
+                [(i,) for i in ids],
+            )
+            self._conn.executemany(
+                "DELETE FROM cache_entry_docs WHERE entry_id = ?",
                 [(i,) for i in ids],
             )
             self._conn.commit()
@@ -409,6 +507,7 @@ class CacheStorage:
         """清空全部缓存（测试/调试用）"""
         with self._lock:
             self._conn.execute("DELETE FROM cache_entries")
+            self._conn.execute("DELETE FROM cache_entry_docs")
             self._conn.commit()
             self._load_index()
             logger.info("CacheStorage: 已清空全部缓存")

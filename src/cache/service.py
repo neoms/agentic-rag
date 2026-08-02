@@ -195,6 +195,21 @@ class CacheService:
         except Exception as e:
             logger.warning("[cache] 写回失败: %s", e)
 
+    def invalidate_documents(self, doc_ids: list[str]) -> int:
+        """删除文档后精确失效相关缓存条目（精准缓存 + 语义缓存一并清除）
+
+        只清除 sources 中引用了指定 doc_id 的条目，其他条目不受影响。
+        """
+        if not settings.cache_enabled:
+            return 0
+        ids = [d for d in (doc_ids or []) if d]
+        if not ids:
+            return 0
+        count = self._storage.invalidate_by_doc_ids(ids)
+        if count:
+            logger.info("[cache] 按文档失效缓存: %d 条, doc_ids=%s", count, ids)
+        return count
+
     def replay(self, entry: dict, path: list[str]) -> list[StreamEvent]:
         """构造缓存命中的 SSE 回放事件
 
