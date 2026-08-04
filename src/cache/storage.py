@@ -222,8 +222,12 @@ class CacheStorage:
             if float(sims[idx]) >= min_similarity
         ]
 
-    def get_by_id(self, entry_id: int) -> dict | None:
-        """按 id 获取条目（语义命中后取完整数据），命中即更新访问统计"""
+    def get_by_id(self, entry_id: int, touch: bool = True) -> dict | None:
+        """按 id 获取条目（语义命中后取完整数据）
+
+        touch=True（默认）时更新访问统计；焦点校验等只读探测场景传
+        touch=False，避免未命中的候选消耗 LRU 排序。
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM cache_entries WHERE id = ?", (entry_id,)
@@ -233,7 +237,8 @@ class CacheStorage:
             if self._is_expired(row["created_at"]):
                 self._delete_rows([row["id"]])
                 return None
-            self._touch(row["id"])
+            if touch:
+                self._touch(row["id"])
             return self._row_to_entry(row)
 
     # ==================== 写入与淘汰 ====================

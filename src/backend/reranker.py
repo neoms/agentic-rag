@@ -50,7 +50,10 @@ def rerank_documents(
             model=settings.rerank_model,
             query=query,
             documents=doc_texts,
-            top_n=min(top_k, len(doc_texts)),
+            # 请求全部文档的分数（top_n=输入数）：重排后可能需要在结果集外
+            # 保留文档（如知识图谱上下文保底插回），这些文档也必须带有真实
+            # rerank_score，供文档评估的 score 通道使用。
+            top_n=len(doc_texts),
             return_documents=False,
         )
 
@@ -81,9 +84,8 @@ def rerank_documents(
         top_score = results[0].relevance_score if results else 0
         bottom_score = results[-1].relevance_score if results else 0
         logger.info(
-            "重排序完成: %d → %d, relevance_score 范围 [%.4f, %.4f]",
-            len(documents), len(reranked),
-            bottom_score, top_score,
+            "重排序完成: %d 个文档已打分, relevance_score 范围 [%.4f, %.4f]",
+            len(reranked), bottom_score, top_score,
         )
 
         return reranked, None

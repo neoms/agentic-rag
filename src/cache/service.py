@@ -10,8 +10,12 @@
 import hashlib
 import json
 import logging
+import re
 import time
 import unicodedata
+from difflib import SequenceMatcher
+
+import jieba
 
 from src.cache.storage import CacheStorage
 from src.config.settings import settings
@@ -31,10 +35,70 @@ CACHE_MODEL_KEYS = (
 # 缓存命中时答案的 token 分块大小（字符）
 REPLAY_CHUNK_SIZE = 30
 
+# 语义命中后，新问法与缓存问法达到该字符相似度才写回精准缓存
+WRITE_BACK_MIN_SIMILARITY = 0.9
+
+# 语义命中"信息需求焦点"判定用疑问词（命中前需确认答案覆盖新问法的信息需求）
+_QUESTION_MARKERS = (
+    "谁", "什么", "哪些", "哪", "哪里", "哪儿", "何时", "多少",
+    "怎么", "如何", "怎样", "为什么", "为何", "是否", "是不是",
+    "有没有", "哪个", "多久", "吗",
+)
+
+# 焦点关键词判定中的停用词（虚词/助词/疑问词）
+_STOP_TOKENS = frozenset({
+    "的", "了", "是", "吗", "呢", "啊", "吧", "么", "于", "在", "有",
+    "和", "与", "或", "及", "为", "之", "其", "就", "都", "也", "还",
+    "而", "被", "把", "从", "到", "对", "向", "跟", "比", "这", "那",
+})
+
 
 def normalize_query(query: str) -> str:
     """规范化查询：NFKC（全角→半角）+ 小写 + 折叠空白"""
     return " ".join(unicodedata.normalize("NFKC", query).lower().split())
+
+
+def extract_focus_items(query_norm: str) -> set[str]:
+    """按标点切分查询，提取含疑问词的信息需求片段（如 'ceo是谁'、'成立于哪一年'）"""
+    items: set[str] = set()
+    for seg in re.split(r"[,，;；、。?!？！\s]+", query_norm):
+        seg = seg.strip("?？。")
+        if seg and any(marker in seg for marker in _QUESTION_MARKERS):
+            items.add(seg)
+    return items
+
+
+def _key_tokens(text: str) -> set[str]:
+    """提取文本的关键词集合（jieba 分词，剔除虚词/疑问词）"""
+    tokens: set[str] = set()
+    for tok in jieba.lcut(text):
+        tok = tok.strip()
+        if not tok or tok in _STOP_TOKENS:
+            continue
+        if any(marker in tok for marker in _QUESTION_MARKERS):
+            continue
+        tokens.add(tok)
+    return tokens
+
+
+def has_new_focus(new_query_norm: str, cached_query_norm: str) -> bool:
+    """新问法是否引入了缓存问法未覆盖的信息需求焦点
+
+    语义缓存只按整句向量相似度命中，容易被"同主题、不同焦点"的问题误命中
+    （如 '小象科技成立于哪一年，总部位于哪里？' vs '小象科技CEO是谁？'）。
+    命中前对比双方疑问焦点片段的关键词：新问法的某个焦点片段出现了缓存
+    问法没有覆盖的关键词 → 判定未命中（答案可能缺失该信息需求）。
+    无焦点可判（无疑问词）时返回 False，交给相似度阈值把关。
+    """
+    new_items = extract_focus_items(new_query_norm)
+    if not new_items:
+        return False
+    cached_keys = _key_tokens(cached_query_norm)
+    for item in new_items:
+        item_keys = _key_tokens(item)
+        if item_keys and not item_keys <= cached_keys:
+            return True
+    return False
 
 
 def build_config_signature(request: AgenticChatRequest) -> str:
@@ -132,22 +196,31 @@ class CacheService:
         candidates = self._storage.semantic_search(
             vector,
             signature,
-            top_k=1,
+            top_k=3,
             min_similarity=settings.cache_semantic_threshold,
         )
         info["semantic_checked"] = True
         info["semantic_ms"] = round((time.perf_counter() - t_semantic) * 1000, 1)
-        if candidates:
-            best = candidates[0]
-            info["similarity"] = best["similarity"]
-            entry = self._storage.get_by_id(best["id"])
-            if entry is not None:
-                info["cache_type"] = "semantic"
-                info["semantic_hit"] = True
-                logger.info("[cache] 语义命中: sim=%.4f, hit_count=%d",
-                            best["similarity"], entry["hit_count"])
-                return entry, vector, info
-            logger.info("[cache] 语义候选命中但条目已失效: id=%d", best["id"])
+        for cand in candidates:
+            info["similarity"] = cand["similarity"]
+            entry = self._storage.get_by_id(cand["id"], touch=False)
+            if entry is None:
+                logger.info("[cache] 语义候选命中但条目已失效: id=%d", cand["id"])
+                continue
+            if has_new_focus(query_norm, entry["query_norm"]):
+                logger.info(
+                    "[cache] 语义候选焦点不匹配，跳过: sim=%.4f, norm='%s', new_focus='%s'",
+                    cand["similarity"], query_norm,
+                    ",".join(sorted(extract_focus_items(query_norm))),
+                )
+                continue
+            # 通过焦点校验：命中（touch 更新访问统计）
+            entry = self._storage.get_by_id(cand["id"])
+            info["cache_type"] = "semantic"
+            info["semantic_hit"] = True
+            logger.info("[cache] 语义命中: sim=%.4f, hit_count=%d",
+                        cand["similarity"], entry["hit_count"])
+            return entry, vector, info
 
         best_sim = (
             f"{candidates[0]['similarity']:.4f}" if candidates else "n/a"
@@ -213,6 +286,23 @@ class CacheService:
                 copy_item["paragraph_text"] = para[:max_chars] + "…"
             truncated[key] = copy_item
         return truncated
+
+    def should_promote_to_exact(self, query: str, entry_query: str) -> bool:
+        """语义命中后是否把当前问法写回精准缓存
+
+        只有新问法与缓存问法高度一致（字符相似度达标）时才写回，
+        避免"语义相近但焦点不同"的问法被固化到精准缓存中扩散错误答案。
+        """
+        a = normalize_query(query)
+        b = normalize_query(entry_query)
+        ratio = SequenceMatcher(None, a, b).ratio()
+        if ratio < WRITE_BACK_MIN_SIMILARITY:
+            logger.debug(
+                "[cache] 跳过精准写回: query='%s', entry='%s', ratio=%.3f",
+                a, b, ratio,
+            )
+            return False
+        return True
 
     def invalidate_documents(self, doc_ids: list[str]) -> int:
         """删除文档后精确失效相关缓存条目（精准缓存 + 语义缓存一并清除）

@@ -16,9 +16,10 @@ from src.metrics import llm_calls_total
 
 logger = logging.getLogger(__name__)
 
-# 模块级客户端缓存：(model, temperature, max_tokens, streaming) → ChatOpenAI
+# 模块级客户端缓存：按 (model, temperature, max_tokens, streaming, api_key,
+# base_url, extra_body) 组合缓存 ChatOpenAI 实例，进程内永久复用。
 # ChatOpenAI 为无状态客户端，跨请求复用安全；组合数量有限，不会无界增长
-_client_cache: dict[tuple[str, float, int, bool], ChatOpenAI] = {}
+_client_cache: dict[tuple[str, float, int, bool, str, str, str], ChatOpenAI] = {}
 
 
 def _should_retry(exception: BaseException) -> bool:
@@ -178,8 +179,15 @@ def create_fast_llm(
     streaming: bool = False,
     extra_body: dict | None = None,
 ) -> ChatOpenAI:
-    """创建快速 LLM 客户端（settings.llm_model_fast，环境变量 LLM_MODEL_FAST），用于评估、重排序等轻量任务"""
-    logger.info("创建快速 LLM: model=%s", settings.llm_model_fast)
+    """获取快速 LLM 客户端（settings.llm_model_fast，环境变量 LLM_MODEL_FAST），用于评估、重排序等轻量任务
+
+    默认关闭思考模式（复用 GENERATION_EXTRA_BODY 配置）：qwen3.x 系列默认开
+    思考，轻量分类/抽取/改写任务开思考只会增加延迟，且非流式调用思考模型
+    可能直接报错或长时间无输出。显式传入 extra_body 可覆盖默认值。
+    """
+    if extra_body is None:
+        extra_body = settings.generation_extra_body_dict
+    logger.debug("获取快速 LLM 客户端: model=%s", settings.llm_model_fast)
     return create_llm_client(
         model=settings.llm_model_fast,
         temperature=0.0,

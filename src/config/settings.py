@@ -70,9 +70,12 @@ class Settings(BaseSettings):
 
     # ========== 文档评估（grade_documents score 预筛） ==========
     # 阈值标定建议：先跑一轮真实数据，观察 rerank_score 分布再微调
-    grade_score_irrelevant_max: float = 0.25  # 全体文档最高分 ≤ 此值 → 直接 IRRELEVANT（负判定，0 LLM）
+    grade_score_irrelevant_max: float = 0.25  # score 负判定上界：≤ 此值视为"模糊低分区"
+    grade_score_irrelevant_hard_min: float = 0.10  # 仅当最高分 ≤ 此值才直接 IRRELEVANT（0 LLM），
+                                                   # 模糊低分区交关键词/LLM 兜底，避免误杀低分相关文档
     grade_score_relevant_min: float = 0.70    # top1 分 ≥ 此值 → 候选正判定（还需满足断层）
     grade_score_relevant_gap: float = 0.10    # top1 与 top2 的最小分差（断层检测，规避绝对阈值误判）
+    transform_loop_improve_min: float = 0.02  # 查询重写循环止损：重写后 top1 重排分提升不足此值则停止重写
 
     # ========== 对话记忆 ==========
     memory_window_size: int = 20
@@ -113,7 +116,7 @@ class Settings(BaseSettings):
     cache_enabled: bool = True
     cache_exact_enabled: bool = True
     cache_semantic_enabled: bool = True
-    cache_semantic_threshold: float = 0.92   # 语义缓存命中阈值（余弦相似度）
+    cache_semantic_threshold: float = 0.95   # 语义缓存命中阈值（余弦相似度）
     cache_max_entries: int = 5000            # 缓存条目上限（LRU 淘汰）
     cache_ttl_seconds: int = 0               # 0 = 不过期（仅按 LRU 淘汰）
     cache_db_path: str = "data/cache/cache.db"

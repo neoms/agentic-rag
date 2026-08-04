@@ -74,6 +74,11 @@ class AgentState(TypedDict):
     # 重排序降级原因（API 异常时为非 None 字符串，正常为 None）
     rerank_degraded: str | None
 
+    # 重排序质量跟踪（供"查询重写循环止损"判定）
+    rerank_top_score: float              # 本轮 top1 重排分
+    best_rerank_score: float             # 跨轮最优 top1 重排分
+    rerank_improved: bool                # 本轮相对上轮是否提升（首轮恒为 True）
+
     # 各策略耗时（毫秒），由 parallel_retrieve_merge_node 返回
     strategy_timings_ms: dict[str, float]
 

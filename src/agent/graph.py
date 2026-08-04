@@ -78,6 +78,14 @@ def should_continue_after_grade(state: AgentState) -> Literal["judge_complexity"
     max_iter = state.get("max_iterations", 3)
 
     if enable_transform and iteration < max_iter:
+        # 重写循环止损：重写后检索质量（top1 重排分）没有提升则停止重写，
+        # 避免空转多轮（重写查询语义等价时检索结果不变，再重写也是浪费）。
+        if not state.get("rerank_improved", True):
+            logger.info(
+                "路由: 重写后检索无改善 (top1=%.4f) → judge_complexity (降级)",
+                state.get("rerank_top_score", 0.0),
+            )
+            return "judge_complexity"
         logger.info("路由: 文档不相关 → transform_query (第 %d/%d 次)", iteration + 1, max_iter)
         return "transform_query"
 

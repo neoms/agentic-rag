@@ -104,14 +104,57 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
         logger.info("重排序节点: 全局禁用，透传 %d 个文档", len(documents))
         return {"agent_path": ["rerank (disabled)"]}
 
-    reranked, degraded_reason = rerank_documents(
+    reranked_all, degraded_reason = rerank_documents(
         query, documents, top_k=settings.rerank_top_k,
     )
 
+    if degraded_reason:
+        top_docs = list(documents[:settings.rerank_top_k])
+    else:
+        # rerank_documents 现返回全部带分文档（按分数降序），此处截取 top_k
+        top_docs = list(reranked_all[:settings.rerank_top_k])
+
+    # KG 上下文保底：KG 已参与重排并获得真实 rerank_score；若被挤出 top_k，
+    # 插回列表底部，保证知识图谱信息进入后续文档评估与生成上下文。
+    kg_docs = [
+        d for d in documents
+        if d.metadata.get("source") == "knowledge_graph"
+    ]
+    for kg_doc in kg_docs:
+        if kg_doc in top_docs:
+            continue
+        if degraded_reason or kg_doc.metadata.get("rerank_score") is not None:
+            top_docs.append(kg_doc)
+            if kg_doc.metadata.get("rerank_score") is not None:
+                logger.info(
+                    "重排序节点: KG 上下文被挤出 top%d，保底插回底部 (score=%.4f)",
+                    settings.rerank_top_k, kg_doc.metadata["rerank_score"],
+                )
+        else:
+            logger.warning("重排序节点: KG 上下文缺少重排分数，未插回")
+
     update: dict[str, Any] = {
-        "documents": reranked,
+        "documents": top_docs,
         "rerank_degraded": degraded_reason,
     }
+    # 记录本轮 top1 重排分与跨轮最优分，供"查询重写循环止损"判定：
+    # 重写后的检索质量（top1 分）没有提升时，路由层应停止继续重写。
+    top_scores = _collect_rerank_scores(top_docs)
+    top_score = top_scores[0] if top_scores else 0.0
+    prev_best = float(state.get("best_rerank_score", 0.0))
+    iteration = int(state.get("iteration_count", 0))
+    update["rerank_top_score"] = top_score
+    update["best_rerank_score"] = max(prev_best, top_score)
+    # 首轮视为有改善（第一次重写值得尝试）；后续轮仅当 top1 分提升
+    # 超过阈值才继续，否则停止空转。
+    update["rerank_improved"] = (
+        iteration == 0 or top_score > prev_best + settings.transform_loop_improve_min
+    )
+    if iteration > 0:
+        logger.info(
+            "重排序节点: 第 %d 轮 top1=%.4f, 上轮最优=%.4f, improved=%s",
+            iteration, top_score, prev_best, update["rerank_improved"],
+        )
     if degraded_reason:
         update["agent_path"] = ["rerank (degraded)"]
         logger.warning("重排序节点: 已降级为原始排序: %s", degraded_reason)
@@ -245,6 +288,14 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
             _filter_note = f"strict (docs≥6, thresh={threshold}, core_words={query_core_count})"
             keep_indices = {idx for overlap, idx, _ in scored if overlap >= threshold}
 
+        # KG 上下文保底：结构化图谱文本不参与词法 overlap 过滤，始终保留，
+        # 保证知识图谱信息能进入生成上下文（与重排环节的保底插回一致）。
+        kg_indices = {
+            idx for idx, doc in enumerate(documents)
+            if doc.metadata.get("source") == "knowledge_graph"
+        }
+        keep_indices |= kg_indices
+
         # 保底：至少保留 1 篇最高分
         if not keep_indices:
             best_idx = max(scored, key=lambda x: x[0])[1]
@@ -259,13 +310,17 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
     #    文档按 rerank score 降序排列，用"排序位置 + 断层"代替绝对阈值，
     #    规避不同 query 下 score 分布整体偏移导致的误判。
     scores = _collect_rerank_scores(documents)
+    score_ambiguous_low = False
     if scores is not None:
         top1 = scores[0]
-        # 负判定：全体低分 → 文档库无答案（jieba 词汇匹配无法判定的场景）
-        if top1 <= settings.grade_score_irrelevant_max:
+        # 负判定（仅当分数极低）：全体文档最高分 ≤ hard_min → 文档库无答案
+        # （0 LLM）。介于 hard_min 与 irrelevant_max 之间的"模糊低分区"不再
+        # 直接负判——低分不一定不相关（如分块缺少实体名的文档），交由
+        # 关键词/LLM 兜底，避免把包含答案的文档误杀并触发无意义的重写循环。
+        if top1 <= settings.grade_score_irrelevant_hard_min:
             logger.info(
                 "评估节点: score 通道 → IRRELEVANT (max_score=%.4f ≤ %.2f)",
-                top1, settings.grade_score_irrelevant_max,
+                top1, settings.grade_score_irrelevant_hard_min,
             )
             return {
                 "documents_relevant": False,
@@ -284,14 +339,27 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
             # 返回 rerank 语义 top 3：score 通道命中说明 rerank 信号可信，
             # 词法过滤可能误删同义词/改写场景下的语义相关文档。
             # 与 LLM 兜底分支的 filtered[:3] 上下文量相当。
+            top_docs = list(documents[:3])
+            for kg_doc in (
+                d for d in documents
+                if d.metadata.get("source") == "knowledge_graph"
+            ):
+                if kg_doc not in top_docs:
+                    top_docs.append(kg_doc)
             return {
                 "documents_relevant": True,
-                "documents": documents[:3],
+                "documents": top_docs,
                 "agent_path": ["grade_documents (score relevant)"],
             }
+        if top1 <= settings.grade_score_irrelevant_max:
+            score_ambiguous_low = True
+            logger.info(
+                "评估节点: score 模糊低分区 (max=%.4f)，跳过关键词自动判定，走 LLM 兜底",
+                top1,
+            )
 
     # ── 3. 快速路径检查（任一保留文档 overlap 达标） ──
-    if query_keywords:
+    if query_keywords and not score_ambiguous_low:
         for overlap, idx, doc in scored:
             if idx in keep_indices and overlap >= threshold:
                 logger.info(
@@ -336,7 +404,7 @@ def transform_query(state: AgentState) -> dict[str, Any]:
 
     logger.info("查询重写节点: 第 %d 次重写, 原查询='%s'", iteration_count + 1, query)
 
-    llm = create_llm_client()
+    llm = create_llm_client(extra_body=settings.generation_extra_body_dict)
     messages = [
         HumanMessage(content=REWRITE_QUERY_SYSTEM),
         HumanMessage(content=REWRITE_QUERY_USER.format(query=query)),
@@ -576,8 +644,8 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
             page_content=kg_context,
             metadata={"source": "knowledge_graph", "filename": "知识图谱"},
         )
-        merged.insert(0, kg_doc)
-        logger.info("[PARALLEL_MERGE] KG 上下文已前置插入")
+        merged.append(kg_doc)
+        logger.info("[PARALLEL_MERGE] KG 上下文已追加到结果尾部")
 
     logger.info(
         "[PARALLEL_MERGE] 结果: base=%d, bm25=%d, multi=%d, "

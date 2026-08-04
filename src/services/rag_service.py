@@ -139,8 +139,16 @@ class RAGService:
                 node_timings["cache_replay"] = round(
                     time.perf_counter() * 1000 - node_start_ts.pop("cache_replay"), 1
                 )
-                # 语义命中后把当前问法写回精准缓存：同文本下次提问可直接精准命中
-                if cache_info.get("cache_type") == "semantic" and query_embedding:
+                # 语义命中后把当前问法写回精准缓存：同文本下次提问可直接精准命中。
+                # 仅当问法与缓存问法高度一致时才写回，防止"焦点不同"的问法
+                # 把错误答案固化并扩散到精准缓存。
+                if (
+                    cache_info.get("cache_type") == "semantic"
+                    and query_embedding
+                    and cache_service.should_promote_to_exact(
+                        request.query, cache_entry["query"]
+                    )
+                ):
                     try:
                         cache_service.store(
                             query=request.query,
@@ -154,6 +162,11 @@ class RAGService:
                         )
                     except Exception as e:
                         logger.warning("[stream_rag] 语义命中写回失败: %s", e)
+                elif cache_info.get("cache_type") == "semantic":
+                    logger.info(
+                        "[stream_rag] 语义命中但问法差异较大，跳过精准写回: query='%s'",
+                        request.query[:60],
+                    )
                 node_data = {
                     "cache_lookup": cache_lookup_data,
                     "cache_replay": {
@@ -219,6 +232,9 @@ class RAGService:
             "documents_relevant": False,
             "iteration_count": 0,
             "max_iterations": 3,
+            "rerank_top_score": 0.0,
+            "best_rerank_score": 0.0,
+            "rerank_improved": True,
             "agent_path": [],
             "stream": True,
             "tool_calls": [],

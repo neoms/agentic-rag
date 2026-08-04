@@ -93,3 +93,49 @@ def test_replay_events(temp_cache_db):
     assert "token" in kinds and "source" in kinds and "citations" in kinds
     assert "hallucination" in kinds and "path" in kinds
     assert json.loads(events[-1].data) == ["cache_lookup", "cache_replay"]
+
+
+def test_semantic_focus_mismatch_miss(temp_cache_db, stub_embedding):
+    """同主题、不同信息需求：新问法引入缓存问法未覆盖的焦点 → 判未命中"""
+    req = _req("小象科技成立于哪一年,总部位于哪里?")
+    sig = build_config_signature(req)
+    temp_cache_db.store(
+        query="小象科技成立于哪一年,总部位于哪里?", signature=sig,
+        vector=[0.1, 0.2], answer="成立于2019年,总部在海淀",
+        sources=[], agent_path=["x"], citations={}, hallucination=None,
+    )
+    # stub 向量相同 → 余弦相似度 1.0 会越过阈值，焦点校验应将其拦截
+    entry, vector, info = temp_cache_db.lookup("小象科技ceo是谁", sig)
+    assert entry is None
+    assert info["cache_type"] == "none"
+    assert info["semantic_hit"] is False
+    assert vector is not None  # 向量仍返回供检索复用
+
+
+def test_semantic_focus_covered_hit(temp_cache_db, stub_embedding):
+    """新问法的焦点被缓存问法覆盖（答案应包含该信息）→ 正常命中"""
+    req = _req("小象科技的ceo是谁,其他高管还有谁?")
+    sig = build_config_signature(req)
+    temp_cache_db.store(
+        query="小象科技的ceo是谁,其他高管还有谁?", signature=sig,
+        vector=[0.1, 0.2], answer="CEO是李明",
+        sources=[], agent_path=["x"], citations={}, hallucination=None,
+    )
+    entry, vector, info = temp_cache_db.lookup("小象科技的ceo是谁", sig)
+    assert entry is not None
+    assert info["cache_type"] == "semantic" and info["semantic_hit"] is True
+
+
+def test_should_promote_to_exact(temp_cache_db):
+    """语义命中写回精准缓存：仅限与缓存问法高度一致的问法"""
+    assert temp_cache_db.should_promote_to_exact(
+        "小象科技的ceo是谁?", "小象科技的ceo是谁?"
+    ) is True
+    assert temp_cache_db.should_promote_to_exact(
+        "小象科技的ceo是谁?", "小象科技ceo是谁"
+    ) is True
+    # 焦点差异较大的问法不写回，防止错误答案固化扩散
+    assert temp_cache_db.should_promote_to_exact(
+        "小象科技ceo是谁,首席执行官是谁?",
+        "小象科技成立于哪一年,总部位于哪里?",
+    ) is False
