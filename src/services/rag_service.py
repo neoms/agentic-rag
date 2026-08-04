@@ -60,7 +60,9 @@ class RAGService:
         self, request: AgenticChatRequest
     ) -> AsyncIterator[StreamEvent]:
         """Agent 模式流式 RAG（SSE）"""
-        t0 = time.time()
+        # 统一使用单调时钟（time.perf_counter）：与 first_token_at / 节点计时
+        # 一致，避免 time.time()（墙上时钟）混用导致 TTFT 计算出巨大负值
+        t0 = time.perf_counter()
         logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
                      request.session_id, request.query[:80], request.enable_web_search)
         chat_requests_total.inc()
@@ -197,7 +199,7 @@ class RAGService:
                     output_data={
                         "answer": cache_entry["answer"],
                         "sources": cache_entry.get("sources", []),
-                        "latency_seconds": round(time.time() - t0, 3),
+                        "latency_seconds": round(time.perf_counter() - t0, 3),
                         "cache_type": cache_type,
                     },
                     metadata={"use_cache": request.use_cache},
@@ -218,8 +220,8 @@ class RAGService:
                         cached_h.get("faithfulness", 100.0),
                     )
                 logger.info("[stream_rag] 缓存回放完成: answer_len=%d, elapsed=%.2fs",
-                            len(cache_entry["answer"]), time.time() - t0)
-                chat_stream_duration_seconds.observe(time.time() - t0)
+                            len(cache_entry["answer"]), time.perf_counter() - t0)
+                chat_stream_duration_seconds.observe(time.perf_counter() - t0)
                 return
 
         initial_state: AgentState = {
@@ -357,7 +359,7 @@ class RAGService:
         # 获取最终状态
         final_state = await asyncio.to_thread(agent_graph.get_state, config)
         result = final_state.values if final_state else {}
-        logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.time() - t0)
+        logger.info("[stream_rag] 状态图完成, graph_elapsed=%.2fs", time.perf_counter() - t0)
 
         # 构建图内节点的 I/O 数据 + 处理 agent_path
         node_data: dict = self._build_node_data(result, request)
@@ -381,7 +383,7 @@ class RAGService:
 
         documents = result.get("documents", [])
         logger.info("[stream_rag] 状态图完成: path=%s, docs=%d, graph_elapsed=%.2fs",
-                     agent_path, len(documents), time.time() - t0)
+                     agent_path, len(documents), time.perf_counter() - t0)
 
         # 发送检索结果来源
         sources = [
@@ -436,7 +438,11 @@ class RAGService:
                 node_start_ts["check_hallucination"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="check_hallucination")
                 hallucination_passed, hallucination_faithfulness = (
-                    await check_hallucination_async(documents, answer)
+                    await check_hallucination_async(
+                        documents,
+                        answer,
+                        citation_metadata=result.get("citation_metadata", {}),
+                    )
                 )
                 if "check_hallucination" in node_start_ts:
                     node_timings["check_hallucination"] = round(
@@ -556,7 +562,7 @@ class RAGService:
             output_data={
                 "answer": answer,
                 "sources": [s.model_dump() for s in sources],
-                "latency_seconds": round(time.time() - t0, 3),
+                "latency_seconds": round(time.perf_counter() - t0, 3),
                 "cache_type": cache_type,
             },
             metadata={"use_cache": request.use_cache},
@@ -565,8 +571,8 @@ class RAGService:
             event="done",
             data=json.dumps({"trace_id": trace_id or ""}, ensure_ascii=False),
         )
-        logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
-        chat_stream_duration_seconds.observe(time.time() - t0)
+        logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.perf_counter() - t0)
+        chat_stream_duration_seconds.observe(time.perf_counter() - t0)
 
     @staticmethod
     def _doc_detail(doc: Any) -> dict:

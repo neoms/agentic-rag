@@ -31,6 +31,7 @@ from src.backend.embedding import get_embedding_client
 from src.backend.reranker import rerank_documents
 from src.store.vector_store import vector_store
 from src.retrieval.bm25 import bm25_retriever
+from src.pipeline.chunker import strip_title_prefix
 from src.config.settings import settings
 from src.metrics import record_llm_tokens
 from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
@@ -256,7 +257,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
     scored: list[tuple[int, int, Document]] = []
     for idx, doc in enumerate(documents):
         if query_keywords:
-            doc_keywords, _ = _extract_keywords(doc.page_content)
+            doc_keywords, _ = _extract_keywords(strip_title_prefix(doc.page_content))
             overlap = len(query_keywords & doc_keywords)
         else:
             overlap = 0

@@ -8,6 +8,8 @@
 说明：
 - 默认使用小问题池随机提问：首轮未命中并写回缓存，之后多为缓存命中，成本低
 - 设置 EVAL_LOAD_UNIQUE=1 时每条请求追加随机后缀，强制未命中（真实生成压测）
+- 设置 EVAL_LOAD_WAIT_MIN/MAX 可收紧用户思考间隔（默认 0.5~2.0s 模拟真实节奏；
+  测缓存命中极限 QPS 时可设 0/0.05 持续打满）
 - 阈值断言在测试结束时执行（test_stop）：
     EVAL_LOAD_P95_MAX       默认 10.0（秒）
     EVAL_LOAD_ERROR_RATE_MAX 默认 0.01
@@ -24,13 +26,24 @@ import uuid
 
 from locust import HttpUser, between, events, task
 
-QUERIES = [
+_DEFAULT_QUERIES = [
     "Agentic RAG 系统使用什么作为向量数据库和知识图谱存储引擎？",
     "语义检索与 BM25 关键词检索各自的优势是什么？",
     "知识图谱模块中 GraphStore 的作用是什么？",
     "MMR 算法的 lambda_mult 参数取 0.7 意味着什么？",
     "小象科技成立于哪一年，总部位于哪里？",
 ]
+
+# EVAL_LOAD_EXCLUDE=mmr,xxx 时按子串过滤问题池（如排除因幻觉门控未缓存的问题）
+_EXCLUDE = [
+    s.strip().lower()
+    for s in os.environ.get("EVAL_LOAD_EXCLUDE", "").split(",")
+    if s.strip()
+]
+QUERIES = [
+    q for q in _DEFAULT_QUERIES
+    if not any(part in q.lower() for part in _EXCLUDE)
+] or _DEFAULT_QUERIES
 
 FORCE_UNIQUE = os.environ.get("EVAL_LOAD_UNIQUE", "") == "1"
 
@@ -40,7 +53,10 @@ _start_ts = time.perf_counter()
 
 
 class RagChatUser(HttpUser):
-    wait_time = between(0.5, 2.0)
+    wait_time = between(
+        float(os.environ.get("EVAL_LOAD_WAIT_MIN", "0.5")),
+        float(os.environ.get("EVAL_LOAD_WAIT_MAX", "2.0")),
+    )
 
     @task
     def chat_stream(self) -> None:

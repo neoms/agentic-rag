@@ -13,7 +13,7 @@
 - **可观测性**：`/metrics` Prometheus 指标（QPS/缓存命中/LLM 调用/耗时直方图）、JSON 结构化滚动日志（`log/app.log`，10MB × 5）、组件化 `/health` 健康检查（`?deep=true` 可做 Embedding 探针）
 - **标准评估体系**：RAGAS 标准质量指标（faithfulness/answer_relevancy/factual_correctness/context_precision/context_recall，中英双语显示）+ 性能/成本指标 + Langfuse Cloud 生产追踪与在线采样打分 + Locust 压测；发布门禁（`--gate`）
 - **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
-- **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
+- **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100；每个块带文档标题前缀（`CHUNK_TITLE_CONTEXT`，默认开启），补全文档级上下文，改善重排与幻觉检测的溯源能力
 - **FastAPI + SSE 流式输出**：自动生成 Swagger 文档
 - **ChromaDB 本地持久化**：零外部依赖，数据保存在 `data/chroma/` 目录，文档元数据（doc_id/filename/hash）随块 metadata 一并存储，无需独立注册表
 - **Vue 3 前端**：Vite + TypeScript + TailwindCSS，支持多策略切换、会话历史、拖拽上传、Agent 流程图可视化

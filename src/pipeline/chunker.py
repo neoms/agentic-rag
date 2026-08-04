@@ -18,6 +18,21 @@ logger = logging.getLogger(__name__)
 # 标题检测（与 loader.py 保持一致）
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s", re.MULTILINE)
 
+# 分块标题前缀格式（唯一事实源）：chunker 生成与 grade 关键词剥离共用，
+# 修改格式只需改这一处
+TITLE_PREFIX_TEMPLATE = "【文档主题：{title}】\n"
+_TITLE_PREFIX_STRIP_RE = re.compile(r"^【文档主题：.*?】\s*")
+
+
+def strip_title_prefix(text: str) -> str:
+    """剥离块文本开头的文档标题前缀（用于关键词 overlap 计算）
+
+    标题前缀本身对语义检索 / 重排 / 幻觉检测有补全价值，但会虚增
+    grade 的关键词 overlap（同文档所有块都带标题词 → 全部保留 → 答案过长），
+    因此在关键词打分时剥离。
+    """
+    return _TITLE_PREFIX_STRIP_RE.sub("", text, count=1)
+
 
 def _extract_section_title(text: str) -> str:
     """从文本中提取首个标题行作为章节名称"""
@@ -25,6 +40,30 @@ def _extract_section_title(text: str) -> str:
         if _HEADING_PATTERN.match(line):
             return line.strip()
     return ""
+
+
+def _extract_document_title(texts: list[str]) -> str:
+    """提取文档级标题：优先首个 H1，其次任意标题行，最后为空串
+
+    用于"分块上下文补全"：文档标题拼进每个块，避免块的实体/事实
+    因缺少文档级主题上下文而无法被检索与判定（如"创始团队"块缺少
+    公司名，导致 rerank 低分、幻觉检测无法溯源"小象科技的CEO是李明"）。
+    """
+    h1 = ""
+    any_heading = ""
+    for text in texts:
+        for line in text.split("\n"):
+            m = _HEADING_PATTERN.match(line)
+            if not m:
+                continue
+            title = line[m.end():].strip()
+            if not title:
+                continue
+            if not any_heading:
+                any_heading = title
+            if m.group(1) == "#" and not h1:
+                h1 = title
+    return h1 or any_heading
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +140,11 @@ def chunk_texts(
 
     chunker = create_chunker(chunk_size, chunk_overlap)
     base_metadata = metadata or {}
+    title_prefix = ""
+    if settings.chunk_title_context:
+        doc_title = _extract_document_title(texts)
+        if doc_title:
+            title_prefix = TITLE_PREFIX_TEMPLATE.format(title=doc_title)
 
     all_docs: list[Document] = []
     for text in texts:
@@ -112,7 +156,8 @@ def chunk_texts(
             meta = dict(base_metadata)
             if section_title:
                 meta["section_title"] = section_title
-            doc = Document(page_content=chunk, metadata=meta)
+            content = title_prefix + chunk if title_prefix else chunk
+            doc = Document(page_content=content, metadata=meta)
             all_docs.append(doc)
 
     # 增强元数据：块序号和总数

@@ -34,7 +34,7 @@ Thumbs.db
 
 # Logs
 logs/
-*.log
+log/
 
 # 评估报告产物（新的标准评估体系输出目录）
 /eval/results/

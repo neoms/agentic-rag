@@ -57,7 +57,11 @@ def get_judge_ragas_llm():
     """RAGAS 使用的 judge LLM wrapper"""
     global _judge_ragas_llm
     if _judge_ragas_llm is None:
-        _judge_ragas_llm = LangchainLLMWrapper(get_judge_llm())
+        # bypass_n=True：DashScope 兼容模式不支持 n>1（一次请求只返回 1 个补全），
+        # ragas 默认设置 ChatOpenAI.n=3 会导致"LLM returned 1 generations instead
+        # of requested 3"，指标退化为单代（无集成、评分不稳定）。
+        # bypass_n 后改用 n 份 prompt 分别请求，得到真实的 3 代做集成。
+        _judge_ragas_llm = LangchainLLMWrapper(get_judge_llm(), bypass_n=True)
     return _judge_ragas_llm
 
 

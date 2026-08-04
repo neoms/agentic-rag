@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # ========== 文档分块 ==========
     chunk_size: int = 500
     chunk_overlap: int = 100
+    chunk_title_context: bool = True  # 分块时把文档标题拼进每个块，补全缺失的文档级上下文
     # 按文件类型差异化分块参数 (JSON: {"扩展名": [chunk_size, chunk_overlap]})
     chunk_config_by_type: str = '{"pdf": [800, 200], "md": [500, 100], "txt": [500, 100], "docx": [500, 100], "csv": [500, 100]}'
     # Tokenizer 编码（用于 token 计数分块，设为空字符串则回退到 len()）
