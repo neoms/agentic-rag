@@ -23,6 +23,9 @@ import random
 import threading
 import time
 import uuid
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 from locust import HttpUser, between, events, task
 
@@ -50,6 +53,13 @@ FORCE_UNIQUE = os.environ.get("EVAL_LOAD_UNIQUE", "") == "1"
 _lock = threading.Lock()
 _latencies: list[float] = []
 _start_ts = time.perf_counter()
+_start_wall = datetime.now(timezone.utc)
+
+# 性能测试报告目录（与质量报告同根目录，独立子目录）
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REPORT_DIR = Path(
+    os.environ.get("EVAL_LOAD_REPORT_DIR", str(PROJECT_ROOT / "eval" / "results" / "perf"))
+)
 
 
 class RagChatUser(HttpUser):
@@ -114,6 +124,17 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
     p99 = _percentile(latencies, 0.99)
     qps = len(latencies) / duration
 
+    p95_max = float(os.environ.get("EVAL_LOAD_P95_MAX", "10.0"))
+    error_max = float(os.environ.get("EVAL_LOAD_ERROR_RATE_MAX", "0.01"))
+    failures_list: list[str] = []
+    if p95 > p95_max:
+        failures_list.append(f"p95 latency（p95 延迟）={p95:.3f}s > {p95_max}s")
+    if error_rate > error_max:
+        failures_list.append(f"error rate（错误率）={error_rate:.4f} > {error_max}")
+    passed = not failures_list
+    if failures_list:
+        environment.process_exit_code = 1
+
     print("\n" + "=" * 60)
     print("压测结果 / Load Test Summary")
     print(f"  请求数 / Requests      : {requests}")
@@ -124,21 +145,110 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
     print(f"  延迟 p95 / latency     : {p95:.3f}s")
     print(f"  延迟 p99 / latency     : {p99:.3f}s")
     print("=" * 60)
-
-    p95_max = float(os.environ.get("EVAL_LOAD_P95_MAX", "10.0"))
-    error_max = float(os.environ.get("EVAL_LOAD_ERROR_RATE_MAX", "0.01"))
-    failures_list: list[str] = []
-    if p95 > p95_max:
-        failures_list.append(f"p95 latency（p95 延迟）={p95:.3f}s > {p95_max}s")
-    if error_rate > error_max:
-        failures_list.append(f"error rate（错误率）={error_rate:.4f} > {error_max}")
-    if failures_list:
+    if passed:
+        print("阈值通过 / Threshold check PASSED ✔")
+    else:
         print("阈值未通过 / Threshold check FAILED ✘")
         for f in failures_list:
             print(f"  - {f}")
-        environment.process_exit_code = 1
-    else:
-        print("阈值通过 / Threshold check PASSED ✔")
+
+    _write_report(
+        environment=environment,
+        requests=requests,
+        failures=failures,
+        error_rate=error_rate,
+        qps=qps,
+        p50=p50,
+        p95=p95,
+        p99=p99,
+        duration=duration,
+        p95_max=p95_max,
+        error_max=error_max,
+        failures_list=failures_list,
+        passed=passed,
+    )
+
+
+def _write_report(
+    *,
+    environment,
+    requests: int,
+    failures: int,
+    error_rate: float,
+    qps: float,
+    p50: float,
+    p95: float,
+    p99: float,
+    duration: float,
+    p95_max: float,
+    error_max: float,
+    failures_list: list[str],
+    passed: bool,
+) -> None:
+    """将压测结果写入 eval/results/perf/（JSON + 双语 MD）"""
+    try:
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ts = _start_wall.strftime("%Y%m%d-%H%M%S")
+        # test_stop 时 user_count 可能已归零，优先取目标并发数
+        runner = environment.runner
+        users = getattr(runner, "target_user_count", None)
+        if users is None:
+            users = getattr(runner, "user_count", None)
+        payload = {
+            "timestamp": _start_wall.isoformat(),
+            "duration_seconds": round(duration, 3),
+            "users": users,
+            "requests": requests,
+            "failures": failures,
+            "error_rate": round(error_rate, 6),
+            "qps": round(qps, 3),
+            "latency_p50_s": round(p50, 4),
+            "latency_p95_s": round(p95, 4),
+            "latency_p99_s": round(p99, 4),
+            "threshold_p95_max_s": p95_max,
+            "threshold_error_rate_max": error_max,
+            "threshold_passed": passed,
+            "threshold_failures": failures_list,
+            "config": {
+                "force_unique": FORCE_UNIQUE,
+                "wait_min": float(os.environ.get("EVAL_LOAD_WAIT_MIN", "0.5")),
+                "wait_max": float(os.environ.get("EVAL_LOAD_WAIT_MAX", "2.0")),
+                "queries_count": len(QUERIES),
+            },
+        }
+        json_path = REPORT_DIR / f"perf-{ts}.json"
+        json_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        md_path = REPORT_DIR / f"perf-{ts}.md"
+        status = "PASSED ✔" if passed else "FAILED ✘"
+        md = f"""# 性能压测报告 / Load Test Report
+
+- 时间 / Time: {_start_wall.strftime("%Y-%m-%d %H:%M:%S UTC")}
+- 并发用户 / Users: {payload['users']}
+- 时长 / Duration: {duration:.1f}s
+- 问题池 / Query pool: {len(QUERIES)} 条（force_unique={FORCE_UNIQUE}）
+
+| 指标 / Metric | 结果 / Value |
+|------|------|
+| 请求数 / Requests | {requests} |
+| 失败 / Failures | {failures} |
+| 错误率 / Error rate | {error_rate:.4f} |
+| 吞吐 / QPS | {qps:.2f} |
+| 延迟 p50 / latency | {p50:.3f}s |
+| 延迟 p95 / latency | {p95:.3f}s |
+| 延迟 p99 / latency | {p99:.3f}s |
+| 阈值判定 / Threshold | {status} |
+
+阈值 / Thresholds: p95 ≤ {p95_max}s，error rate ≤ {error_max}
+"""
+        if failures_list:
+            md += "\n未通过项 / Failures:\n" + "\n".join(f"- {f}" for f in failures_list) + "\n"
+        md_path.write_text(md, encoding="utf-8")
+        print(f"报告已写入 / Report written: {json_path}")
+        print(f"                            {md_path}")
+    except Exception as e:  # noqa: BLE001 - 报告写入失败不阻断压测结论
+        print(f"报告写入失败 / Report write failed: {e}")
 
 
 def _percentile(values: list[float], p: float) -> float:

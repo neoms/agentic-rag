@@ -92,8 +92,10 @@ class RAGService:
             # ── cache_lookup 虚拟节点：计时 → 查询 → 完成 ──
             node_start_ts["cache_lookup"] = time.perf_counter() * 1000
             yield StreamEvent(event="node_start", data="cache_lookup")
-            cache_entry, query_embedding, cache_info = cache_service.lookup(
-                request.query, signature,
+            # 缓存查询内含同步 Embedding 调用（语义层），放到线程执行，
+            # 避免慢 API 阻塞事件循环导致全部并发请求一起冻结
+            cache_entry, query_embedding, cache_info = await asyncio.to_thread(
+                cache_service.lookup, request.query, signature,
             )
             node_timings["cache_lookup"] = round(
                 time.perf_counter() * 1000 - node_start_ts.pop("cache_lookup"), 1
