@@ -336,7 +336,7 @@ uv run python -m src.eval.runner --dataset eval/datasets/smoke.jsonl --name smok
 uv run python -m src.eval.runner --dataset eval/datasets/v3.jsonl --gate
 ```
 
-评估请求固定 `use_cache=False`（评测真实生成质量，缓存回放不参与评测）；结果输出到 `eval/results/`（JSON + Markdown 双语报告），并上传数据集与每 trace 得分到 Langfuse（未配置则跳过）。报告会明确标注三类异常，不静默吞掉：**空答案/兜底样本**（不计分）、**指标计算失败**（judge 调用异常等，含 ragas 过程日志）、**跳过指标**（缺少 golden 上下文）。
+评估请求固定 `use_cache=False`（评测真实生成质量，缓存回放不参与评测）；结果输出到 `eval/results/quality/`（JSON + Markdown 双语报告），与压测结果 `eval/results/perf/` 平级，并上传数据集与每 trace 得分到 Langfuse（未配置则跳过）。报告会明确标注三类异常，不静默吞掉：**空答案/兜底样本**（不计分）、**指标计算失败**（judge 调用异常等，含 ragas 过程日志）、**跳过指标**（缺少 golden 上下文）。
 
 ### 在线评估与用户反馈
 
@@ -351,7 +351,7 @@ cd eval/load
 locust -f locustfile.py --host http://localhost:8000 --headless -u 5 -r 1 -t 60s
 ```
 
-SSE 流式消费 `/api/v1/chat/stream`，默认小问题池（首轮写缓存后多为命中，控制成本）；`EVAL_LOAD_UNIQUE=1` 强制未命中。结束时输出双语汇总（QPS/p50/p95/p99/错误率）并按 `EVAL_LOAD_P95_MAX`（默认 10s）与 `EVAL_LOAD_ERROR_RATE_MAX`（默认 0.01）断言，失败退出码非 0。
+SSE 流式消费 `/api/v1/chat/stream`，默认小问题池（首轮写缓存后多为命中，控制成本）；`EVAL_LOAD_UNIQUE=1` 强制未命中。结束时输出双语汇总并写入 `eval/results/perf/`：**吞吐 QPS、端到端延迟 p50/p95/p99、首 token 延迟（TTFT）p50/p95/p99、缓存命中率（精准/语义/未命中分布）、分阶段耗时、单请求成本估算**（best-effort，基于 `/metrics` token 增量 × 单价，不可达时标注 N/A）；按 `EVAL_LOAD_P95_MAX`（默认 10s）与 `EVAL_LOAD_ERROR_RATE_MAX`（默认 0.01）断言，失败退出码非 0。
 
 ## 前端功能
 

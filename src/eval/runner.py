@@ -537,7 +537,11 @@ def run_offline_eval(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agentic RAG 标准评估 runner")
     parser.add_argument("--dataset", required=True, help="数据集 JSONL 路径")
-    parser.add_argument("--output-dir", default="eval/results", help="报告输出目录")
+    parser.add_argument(
+        "--output-dir",
+        default="eval/results/quality",
+        help="质量报告输出目录（默认 eval/results/quality，与压测结果 perf/ 平级）",
+    )
     parser.add_argument("--name", default="smoke", help="数据集/运行名")
     parser.add_argument("--fake-scores", action="store_true", help="stub 冒烟：确定性假分数，不调用真实 LLM")
     parser.add_argument("--gate", action="store_true", help="按 EVAL_GATE_THRESHOLDS 判定，失败退出码非 0")
