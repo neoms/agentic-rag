@@ -173,14 +173,33 @@ def collect_samples(
     stub: bool = False,
 ) -> list[dict[str, Any]]:
     """逐条采集 RAG 输出；stub 模式返回确定性假数据"""
+    return asyncio.run(_collect_all(dataset, flags, stream_fn=stream_fn, stub=stub))
+
+
+async def _collect_all(
+    dataset: list[EvalSample],
+    flags: dict[str, Any],
+    *,
+    stream_fn: StreamFn | None = None,
+    stub: bool = False,
+) -> list[dict[str, Any]]:
+    """单事件循环内逐条采集 RAG 输出（stub 模式返回确定性假数据）
+
+    所有样本必须在同一事件循环内执行：模块级缓存的 LLM/Embedding 客户端
+    内部 httpx AsyncClient 绑定创建它的事件循环，逐样本 asyncio.run 会跨
+    循环复用客户端，触发 "Event loop is closed"（被 openai SDK 包装成
+    Connection error），导致每条样本的首次异步调用失败、依赖重试兜底。
+    """
     results: list[dict[str, Any]] = []
     for i, sample in enumerate(dataset, 1):
         logger.info("[collect] %d/%d: %s", i, len(dataset), sample.question[:60])
         request = _build_request(sample.question, flags)
         if stub:
-            collected = asyncio.run(_collect_one(request, _fake_stream_fn(sample.question)))
+            collected = await _collect_one(request, _fake_stream_fn(sample.question))
         else:
-            collected = asyncio.run(_collect_one(request, stream_fn or rag_service.agentic_rag_stream))
+            collected = await _collect_one(
+                request, stream_fn or rag_service.agentic_rag_stream
+            )
         results.append(
             {
                 "question": sample.question,
@@ -213,7 +232,7 @@ def _build_ragas_metrics(with_reference_contexts: bool) -> list:
     return metrics
 
 
-def _run_ragas(
+async def _run_ragas(
     collected: list[dict[str, Any]],
     with_ref_ctx: bool,
 ) -> tuple[dict[str, list[float | None]], list[str]]:
@@ -235,7 +254,7 @@ def _run_ragas(
             for row in collected
         ]
     )
-    result, notes = _evaluate_ragas(dataset, with_ref_ctx)
+    result, notes = await _evaluate_ragas(dataset, with_ref_ctx)
     if result is None:
         return {}, notes
     df = result.to_pandas()
@@ -250,22 +269,26 @@ def _run_ragas(
     return out, notes
 
 
-def _evaluate_ragas(
+async def _evaluate_ragas(
     dataset: EvaluationDataset,
     with_ref_ctx: bool,
 ) -> tuple[Any | None, list[str]]:
-    """包装 ragas.evaluate，捕获其过程日志（异常对象不外露，经日志捕获）
+    """包装 ragas.aevaluate，捕获其过程日志（异常对象不外露，经日志捕获）
 
     返回 (EvaluationResult | None, notes)。notes 为 ragas 内部 WARNING/ERROR
     日志（如 judge 调用失败、n 代降级等），用于报告"指标失败原因"。
+
+    必须与采集阶段处于同一事件循环：judge/embedding 客户端的异步 httpx
+    客户端绑定创建它的事件循环，跨循环复用会触发 "Event loop is closed"
+    （被 openai SDK 包装成 Connection error），导致首个任务失败。
     """
-    from ragas import evaluate
+    from ragas import aevaluate
 
     notes: list[str] = []
     handler = _RagasNoteHandler(notes)
     logging.getLogger("ragas").addHandler(handler)
     try:
-        result = evaluate(
+        result = await aevaluate(
             dataset,
             metrics=_build_ragas_metrics(with_reference_contexts=with_ref_ctx),
             llm=get_judge_ragas_llm(),
@@ -298,7 +321,7 @@ def _fake_scores(collected: list[dict[str, Any]]) -> dict[str, list[float | None
     return out
 
 
-def compute_scores(
+async def compute_scores(
     collected: list[dict[str, Any]],
     *,
     fake: bool = False,
@@ -312,11 +335,11 @@ def compute_scores(
         without_ref = [r for r in collected if not r.get("reference_contexts")]
         group_scores: dict[int, dict[str, list[float | None]]] = {}
         if with_ref:
-            scores1, notes1 = _run_ragas(with_ref, True)
+            scores1, notes1 = await _run_ragas(with_ref, True)
             group_scores[1] = scores1
             notes.extend(notes1)
         if without_ref:
-            scores0, notes0 = _run_ragas(without_ref, False)
+            scores0, notes0 = await _run_ragas(without_ref, False)
             group_scores[0] = scores0
             notes.extend(notes0)
 
@@ -460,8 +483,18 @@ def run_offline_eval(
     dataset = load_dataset(dataset_path)
 
     logger.info("加载数据集: %s（%d 条）", dataset_path, len(dataset))
-    collected = collect_samples(dataset, flags, stream_fn=stream_fn, stub=stub)
-    per_sample, averages, skipped, notes = compute_scores(collected, fake=fake)
+
+    async def _pipeline() -> tuple:
+        """采集 + 指标计算共用同一事件循环，避免异步客户端跨循环复用"""
+        collected = await _collect_all(
+            dataset, flags, stream_fn=stream_fn, stub=stub
+        )
+        per_sample, averages, skipped, notes = await compute_scores(
+            collected, fake=fake
+        )
+        return collected, per_sample, averages, skipped, notes
+
+    collected, per_sample, averages, skipped, notes = asyncio.run(_pipeline())
 
     langfuse_url = None
     if upload and not fake:

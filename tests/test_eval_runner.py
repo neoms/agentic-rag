@@ -1,5 +1,6 @@
 """离线评估 runner：stub 流采集 + fake 分数 + 双语报告 + 门禁"""
 
+import asyncio
 import json
 import logging
 
@@ -119,7 +120,7 @@ def test_compute_scores_real_path_merge(monkeypatch):
         for i in range(4)
     ]
 
-    def fake_run_ragas(rows, with_ref):
+    async def fake_run_ragas(rows, with_ref):
         n = len(rows)
         scores = {
             m: [round(0.7 + idx / 100, 3) for idx in range(n)]
@@ -128,7 +129,9 @@ def test_compute_scores_real_path_merge(monkeypatch):
         return scores, []
 
     monkeypatch.setattr("src.eval.runner._run_ragas", fake_run_ragas)
-    per_sample, averages, skipped, notes = compute_scores(collected, fake=False)
+    per_sample, averages, skipped, notes = asyncio.run(
+        compute_scores(collected, fake=False)
+    )
 
     assert len(per_sample) == 4
     assert "faithfulness" in averages
@@ -159,11 +162,13 @@ def test_compute_scores_marks_empty_answer_and_failures(monkeypatch):
         }
     ]
 
-    def fake_run_ragas(rows, with_ref):
+    async def fake_run_ragas(rows, with_ref):
         return {m: [None] for m in QUALITY_IDS}, []
 
     monkeypatch.setattr("src.eval.runner._run_ragas", fake_run_ragas)
-    per_sample, averages, skipped, _ = compute_scores(collected, fake=False)
+    per_sample, averages, skipped, _ = asyncio.run(
+        compute_scores(collected, fake=False)
+    )
 
     assert per_sample[0]["answer_empty"] is True
     assert averages == {}

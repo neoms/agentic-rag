@@ -13,7 +13,7 @@
 
 ## 2. GraphStore 图存储
 
-GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久化：
+GraphStore 基于 Kuzu 图数据库实现，数据由 Kuzu 原生持久化到磁盘：
 
 ### 2.1 核心数据结构
 
@@ -44,7 +44,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 | related_to | 关联关系 | 知识图谱 related_to 检索系统 |
 | has_feature | 属性特征 | 系统 has_feature 多策略检索 |
 | causes | 因果关系 | 文档不相关 causes 联网搜索 |
-| depends_on | 依赖关系 | 知识图谱 depends_on NetworkX |
+| depends_on | 依赖关系 | 知识图谱 depends_on Kuzu |
 
 ### 2.4 核心操作
 
@@ -53,7 +53,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 - **search_entities**：模糊搜索实体（支持子串匹配）
 - **get_subgraph**：以种子实体为中心的多跳子图提取
 - **find_paths**：两实体间的多跳路径查找
-- **save / load**：JSON 持久化读写
+- **save / load**：Kuzu 原生持久化，无需手动读写
 
 ## 3. GraphBuilder 图谱构建
 
@@ -61,10 +61,10 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 ### 3.1 抽取流程
 
-1. 对文档的每个 chunk 进行 LLM 实体关系抽取（使用 qwen-turbo 以降低成本）
+1. 对文档的每个 chunk 进行 LLM 实体关系抽取（使用快速模型，LLM_MODEL_FAST 配置，关闭思考模式以降低成本）
 2. 将 JSON 格式的抽取结果解析为实体列表和关系列表
 3. 批量写入 GraphStore（自动去重：同名实体合并，同一实体对同名关系跳过）
-4. JSON 持久化到 `kg_data/knowledge_graph.json`
+4. Kuzu 原生持久化到 `data/kg/kuzu_db`
 
 ### 3.2 Prompt 设计
 
@@ -76,7 +76,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 ## 4. KGIntentAnalyzer 意图分析
 
-在 Agent 工作流的入口节点执行，判断用户问题是否需要调用知识图谱：
+在 Agent 工作流的入口节点执行，优先通过 Kuzu 模糊搜索匹配实体（约 10ms），未命中时再调用快速模型语义分析兜底，判断用户问题是否需要调用知识图谱：
 
 ### 4.1 适用 KG 的问题类型
 
@@ -107,7 +107,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 ### 5.1 检索步骤
 
-1. **实体抽取**：LLM 从 query 提取关键实体名词（最多10个）
+1. **实体匹配**：Kuzu 模糊搜索从 query 匹配实体（子串/别名，评分阈值 0.6）
 2. **实体链接**：在 GraphStore 中搜索匹配实体
    - 优先精确名称匹配
    - 次选别名匹配
@@ -118,9 +118,9 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 ### 5.2 检索结果缓存
 
-检索结果以结构化文本形式存储在 `kg_context` 字段中，在 merge_retrieval 节点作为特殊 Document（标记 source="knowledge_graph"）插入到文档列表最前面。
+检索结果以结构化文本形式存储在 `kg_context` 字段中，在 parallel_retrieve_merge 节点作为特殊 Document（标记 source="knowledge_graph"）参与重排打分；若被挤出 Top-K，则保底插回结果底部。
 
-这确保了知识图谱的结构化知识在生成阶段被优先使用。
+这确保了知识图谱的结构化知识始终进入生成上下文。
 
 ## 6. 与原有 RAG 流程的无缝集成
 
@@ -128,8 +128,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 - 新增 `analyze_kg_intent` 作为入口节点（原入口为 `retrieve`）
 - 新增 `kg_retrieve` 作为并行检索策略之一
-- route_retrieval_strategies 函数增加 KG 条件分支
-- merge_retrieval_node 增加 KG 上下文合并逻辑
+- parallel_retrieve_merge 节点内并行执行 KG 检索并合并 KG 上下文
 
 ### 6.2 数据流变化
 
@@ -147,7 +146,7 @@ GraphStore 基于 NetworkX 的有向图实现，使用 JSON 进行本地持久�
 
 ## 7. 存储与持久化
 
-- 图谱数据保存在 `kg_data/knowledge_graph.json`
+- 图谱数据由 Kuzu 原生持久化在 `data/kg/kuzu_db`
 - 启动时自动加载已有数据
-- 每次文档入库后自动保存
+- 每次文档入库后自动增量写入
 - 支持增量构建：新文档的实体/关系自动合并到现有图谱
