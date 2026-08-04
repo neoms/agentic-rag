@@ -11,7 +11,7 @@
 - **联网搜索降级**：向量库无匹配时自动走 DuckDuckGo 网页搜索，结果带来源 URL
 - **多级缓存（精准 + 语义）**：请求先进缓存，精准缓存按规范化问题 + 策略签名精确匹配，语义缓存按问题向量余弦相似度（默认 ≥0.92）命中；都不命中才调用 LLM，命中时回放存储的答案/来源/路径，零 LLM 调用。语义缓存阶段计算的问题向量复用于检索，不重复调用 Embedding
 - **可观测性**：`/metrics` Prometheus 指标（QPS/缓存命中/LLM 调用/耗时直方图）、JSON 结构化滚动日志（`log/app.log`，10MB × 5）、组件化 `/health` 健康检查（`?deep=true` 可做 Embedding 探针）
-- **LangSmith 评估**：8 维度自动化评估流水线（正确性/忠实度/相关性/完整性/上下文精度/延迟等），版本化目录管理（v1/v2）
+- **标准评估体系**：RAGAS 标准质量指标（faithfulness/answer_relevancy/factual_correctness/context_precision/context_recall，中英双语显示）+ 性能/成本指标 + Langfuse Cloud 生产追踪与在线采样打分 + Locust 压测；发布门禁（`--gate`）
 - **百炼平台统一接入**：LLM 使用 OpenAI 兼容协议，Embedding 使用官方 DashScope SDK
 - **文档分块**：`RecursiveCharacterTextSplitter`，chunk_size=500、chunk_overlap=100
 - **FastAPI + SSE 流式输出**：自动生成 Swagger 文档
@@ -71,17 +71,19 @@ cp .env.example .env
 | `CACHE_TTL_SECONDS` | 缓存过期时间（0 = 不过期） | `0` |
 | `CACHE_CITATION_MAX_CHARS` | 缓存引文段落最大长度 | `500` |
 | `LOG_FILE` | 滚动日志文件路径 | `log/app.log` |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | Langfuse Cloud 追踪与评估（成对配置，不配则降级） | 空 |
+| `LANGFUSE_HOST` | Langfuse 服务地址 | `https://cloud.langfuse.com` |
+| `EVAL_JUDGE_MODEL` | LLM-as-judge 评判模型（独立强模型，留空回退 `LLM_MODEL_STRONG`） | 空 |
+| `EVAL_JUDGE_BASE_URL` / `EVAL_JUDGE_API_KEY` | 评判模型独立接入（可选，默认同 LLM 配置） | 空 |
+| `EVAL_JUDGE_EXTRA_BODY` | judge 额外请求体（JSON；思考模型与 RAGAS n=3 冲突时填 `{"enable_thinking": false}`） | 空 |
+| `GENERATION_EXTRA_BODY` | 流式生成额外请求体（JSON；思考模型耗尽 token 预算导致空答案时填 `{"enable_thinking": false}`） | 空 |
+| `EVAL_GATE_THRESHOLDS` | 发布门禁阈值（JSON，如 `{"faithfulness": 0.85}`） | `{}` |
+| `EVAL_SAMPLE_RATE` | 在线评估采样比例 `(0,1]` | `0.1` |
+| `EVAL_STUB_LLM` | 压测/评估 stub 模式（不调用真实 LLM） | `false` |
+| `LLM_PRICE_INPUT_PER_1M` / `LLM_PRICE_OUTPUT_PER_1M` | LLM 成本估算单价（元/百万 token，0=不计） | `0` |
 
 更多配置项（分块参数、重试、上传阈值、内容校验、模型温度等）见 `src/config/settings.py`；
 启动时会自动校验关键配置，错误会逐项给出当前值/原因/修改位置/修复方式（见 `src/config/validation.py`）。
-
-LangSmith 追踪（可选）：
-
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `LANGSMITH_API_KEY` | LangSmith API Key | `lsv2_pt_xxx` |
-| `LANGSMITH_PROJECT` | LangSmith 项目名 | `agentic-rag` |
-| `LANGSMITH_TRACING` | 是否启用追踪 | `true` |
 
 ### 2. 启动后端
 
@@ -112,7 +114,7 @@ npm run build     # 构建生产包到 front/dist/
 ### 4. 运行测试
 
 ```bash
-# 后端测试（33 个用例，数据隔离在临时目录，无需外网）
+# 后端测试（47 个用例，数据隔离在临时目录，无需外网）
 uv run pytest
 
 # 前端构建检查
@@ -181,6 +183,7 @@ docker compose restart backend
 | GET | `/api/v1/chat/sessions` | 获取全部会话摘要（侧边栏列表） |
 | GET | `/api/v1/chat/history/{session_id}` | 获取会话历史 |
 | DELETE | `/api/v1/chat/history/{session_id}` | 删除会话历史（含持久化数据） |
+| POST | `/api/v1/chat/feedback` | 提交用户反馈（👍/👎 写回 Langfuse；未配置返回 503） |
 
 ### Agentic 请求体参数
 
@@ -290,61 +293,63 @@ analyze_kg_intent (LLM 意图分析)
 - 图谱为空 → `analyze_kg_intent` 直接标记 `kg_intent=False`
 - KG 检索异常/无结果 → 返回空上下文，不影响主流程
 
-## LangSmith 评估
+## 标准评估体系
 
-项目内置 8 维度自动化评估流水线，版本化目录管理（v1/v2）。
+生产级评估体系：**RAGAS 标准质量指标 + 性能/成本指标 + Langfuse Cloud 追踪与在线评估 + Locust 压测**，所有指标**中英双语显示**（如 `faithfulness（忠实度）`、`TTFT（首 token 延迟）`）。
 
-### 评估指标
+### 质量指标（RAGAS 标准实现，零自研 judge）
 
-| 指标 | 说明 |
-|------|------|
-| `correctness` | 答案与标准答案的事实一致性 |
-| `faithfulness` | ★ 答案是否忠实于检索文档（反幻觉检测） |
-| `answer_relevance` | 答案是否直接有效回应用户问题 |
-| `completeness` | 答案是否完整覆盖问题要点 |
-| `context_precision` | ★ 检索文档中真正有用的比例（去噪音） |
-| `retrieval_relevance` | 检索文档与问题的语义相关性 |
-| `answer_length` | 答案长度是否合理 |
-| `latency` | 端到端响应延迟 |
+| 指标（双语） | 说明 | 前置数据 |
+|------|------|------|
+| `faithfulness（忠实度）` | 答案陈述能否在检索上下文中找到依据（反幻觉核心） | answer + retrieved_contexts |
+| `answer_relevancy（答案相关性）` | 答案是否直接有效回应用户问题 | user_input + answer |
+| `factual_correctness（事实正确性）` | 答案与标准答案的事实一致性 | reference |
+| `context_precision（上下文精度）` | 检索排序质量 / 噪音比例 | reference_contexts |
+| `context_recall（上下文召回）` | 检索漏检检测 | reference_contexts |
 
-### 目录结构
+所有 judge 调用统一走 `EVAL_JUDGE_MODEL`（独立强评判模型，可配置独立 `EVAL_JUDGE_BASE_URL/API_KEY`）；未配置时回退 `LLM_MODEL_STRONG` 并在报告标注"judge 与被测同源"。
 
-```
-eval/
-├── run_eval.py                  # 评估脚本（--version 参数化）
-├── v1/                          # v1：3 篇文档，10 题（基础 RAG）
-│   ├── sample_docs/
-│   ├── dataset.jsonl
-│   └── results/
-└── v2/                          # v2：9 篇文档，40 题（含知识图谱）
-    ├── sample_docs/
-    ├── dataset.jsonl
-    └── results/
+### 性能指标（Prometheus + 压测）
+
+`TTFT（首 token 延迟）`、`e2e_latency（端到端延迟 p50/p95/p99）`、`cost_per_query（单请求成本）`、`cache_hit_rate（缓存命中率）`、`error_rate（错误率）`、`throughput（吞吐 QPS）`。
+
+### 数据集（标准 schema）
+
+```jsonl
+{"question": "用户问题", "reference": "标准答案", "reference_contexts": ["golden 上下文", "..."]}
 ```
 
-### 运行评估
+`reference_contexts` 可选：缺失时自动跳过 context_precision/context_recall 并在报告标注。内置冒烟数据集 `eval/datasets/smoke.jsonl`（5 条，覆盖全部 5 个质量指标）；旧的 `eval/v1`、`v2` 数据作为历史产物保留，不参与新体系。
+
+### 运行离线评估
 
 ```bash
-# v1 基础评估
-uv run python eval/run_eval.py --version v1
+# stub 冒烟（不调用真实 LLM，验证流水线机制）
+uv run python -m src.eval.runner --dataset eval/datasets/smoke.jsonl --fake-scores --name smoke
 
-# v2 评估 + 知识图谱
-uv run python eval/run_eval.py --version v2 --enable-kg
+# 真实评估（需要外网：DashScope + 独立 judge）
+uv run python -m src.eval.runner --dataset eval/datasets/smoke.jsonl --name smoke
 
-# v2 评估 + 全策略
-uv run python eval/run_eval.py --version v2 --enable-kg --enable-multi-query --enable-bm25
+# 发布门禁（失败退出码非 0，按 EVAL_GATE_THRESHOLDS 判定）
+uv run python -m src.eval.runner --dataset eval/datasets/v3.jsonl --gate
 ```
 
-评估完成后，结果自动保存到 `eval/{version}/results/`（JSON + Markdown 报告），并同步上传至 LangSmith Dashboard。
+评估请求固定 `use_cache=False`（评测真实生成质量，缓存回放不参与评测）；结果输出到 `eval/results/`（JSON + Markdown 双语报告），并上传数据集与每 trace 得分到 Langfuse（未配置则跳过）。报告会明确标注三类异常，不静默吞掉：**空答案/兜底样本**（不计分）、**指标计算失败**（judge 调用异常等，含 ragas 过程日志）、**跳过指标**（缺少 golden 上下文）。
 
-### 新增评估版本
+### 在线评估与用户反馈
+
+- 生产追踪：配置 `LANGFUSE_PUBLIC_KEY/SECRET_KEY` 后，每次对话自动在 Langfuse 生成 trace（含全链路 span、query/answer/检索上下文/耗时/缓存命中）
+- 在线采样打分：`uv run python -m src.eval.online --limit 200 --days 7`，按 `EVAL_SAMPLE_RATE` 采样生产 trace，对无需 reference 的指标（faithfulness/answer_relevancy/context_precision）打分并写回；`--dry-run` 只采样不打分
+- 用户反馈：对话气泡 👍/👎 → `POST /api/v1/chat/feedback` → 写回 Langfuse `user_feedback` 评分
+
+### 压测（Locust）
 
 ```bash
-mkdir -p eval/v3/sample_docs eval/v3/results
-# 1. 放入测试文档到 eval/v3/sample_docs/
-# 2. 创建 eval/v3/dataset.jsonl（每行一个 {"question": "...", "answer": "..."}）
-uv run python eval/run_eval.py --version v3 --enable-kg
+cd eval/load
+locust -f locustfile.py --host http://localhost:8000 --headless -u 5 -r 1 -t 60s
 ```
+
+SSE 流式消费 `/api/v1/chat/stream`，默认小问题池（首轮写缓存后多为命中，控制成本）；`EVAL_LOAD_UNIQUE=1` 强制未命中。结束时输出双语汇总（QPS/p50/p95/p99/错误率）并按 `EVAL_LOAD_P95_MAX`（默认 10s）与 `EVAL_LOAD_ERROR_RATE_MAX`（默认 0.01）断言，失败退出码非 0。
 
 ## 前端功能
 
@@ -352,6 +357,7 @@ uv run python eval/run_eval.py --version v3 --enable-kg
 - **8 个策略开关**：联网搜索、自反思、重排序、文档评估、查询重写、BM25 检索、Multi-Query 检索、知识图谱检索，实时切换
 - **Sidebar 流程图**：SVG 交互式状态图，含精准缓存/语义缓存/输出回放/缓存写入虚拟节点，命中/未命中箭头与节点耗时实时展示
 - **会话历史**：服务端持久化，侧边栏会话列表由 `GET /chat/sessions` 加载，删除会话同步清除后端数据
+- **用户反馈**：对话气泡 👍/👎，写回 Langfuse trace 评分
 - **知识库管理**：拖拽上传（PDF/MD/TXT/DOCX/CSV），查看/删除已索引文档，上传任务状态实时跟踪
 - **实时健康监控**：顶部栏显示服务状态，30 秒自动刷新
 
@@ -367,9 +373,10 @@ uv run python eval/run_eval.py --version v3 --enable-kg
 
 ### 可观测性
 
-- `/metrics`：Prometheus 指标（请求数、缓存命中 `{type=exact|semantic}`、LLM/Embedding 调用数、耗时直方图、上传统计）
+- `/metrics`：Prometheus 指标（请求数、缓存命中 `{type=exact|semantic}`、LLM/Embedding 调用数、token 用量 `{model,type}`、成本估算、TTFT 与分阶段耗时直方图、缓存节省 LLM 调用、上传统计）
 - `/health`：逐组件健康明细（chroma/state_db/cache/kg/config），`?deep=true` 额外做 Embedding 探针
 - 日志：JSON 结构化行格式，`log/app.log` 滚动（10MB × 5），异常堆栈完整保留在 `exc_info` 字段
+- Langfuse：生产对话全链路 trace + 在线采样打分 + 用户反馈（未配置时全链路优雅降级）
 
 ## 项目结构
 
@@ -400,6 +407,14 @@ agentic-rag/
 │   ├── cache/                 # 多级缓存（精准 + 语义）
 │   │   ├── service.py         # 缓存编排（lookup/store/replay/invalidate）
 │   │   └── storage.py         # SQLite 持久化 + numpy 内存向量索引
+│   ├── eval/                  # 标准评估体系
+│   │   ├── metrics.py         # 双语指标注册表（RAGAS 标准质量指标 + 性能/体验指标）
+│   │   ├── judge.py           # LLM-as-judge 评判模型（EVAL_JUDGE_MODEL）
+│   │   ├── langfuse.py        # Langfuse 接入（懒加载 + 优雅降级 + 打分）
+│   │   ├── dataset.py         # 数据集 schema 校验与加载
+│   │   ├── report.py          # 双语报告与门禁判定
+│   │   ├── runner.py          # 离线评估 CLI（含 --fake-scores / --gate）
+│   │   └── online.py          # 在线采样打分 CLI
 │   ├── knowledge_graph/       # 知识图谱模块（Kuzu + numpy）
 │   │   ├── __init__.py        # 单例工厂函数
 │   │   ├── graph_store.py     # Kuzu 图数据库（原生持久化）
@@ -427,21 +442,16 @@ agentic-rag/
 │       ├── document_service.py # 文档管理服务（有界索引队列）
 │       ├── generator.py       # 生成节点（引文标注 + 流式输出）
 │       └── hallucination_checker.py # 幻觉检测
-├── tests/                     # pytest 测试（数据隔离，33 个用例）
+├── tests/                     # pytest 测试（数据隔离，47 个用例）
 ├── Dockerfile                 # 后端容器镜像
 ├── docker-compose.yml         # 后端 + 前端（nginx 反代）编排
 ├── front/Dockerfile           # 前端容器镜像（node 构建 → nginx）
 ├── front/nginx.conf           # nginx 静态托管 + /api 反代配置
-├── eval/                      # LangSmith 评估
-│   ├── run_eval.py            # 评估脚本（支持 --enable-kg 等参数）
-│   ├── v1/                    # v1：基础 RAG 评估
-│   │   ├── sample_docs/       # 3 篇测试文档
-│   │   ├── dataset.jsonl      # 10 题测试集
-│   │   └── results/           # 评估结果
-│   └── v2/                    # v2：含知识图谱评估
-│       ├── sample_docs/       # 9 篇测试文档
-│       ├── dataset.jsonl      # 40 题测试集
-│       └── results/           # 评估结果
+├── eval/                      # 评估数据与压测
+│   ├── datasets/smoke.jsonl   # 标准 schema 冒烟数据集（5 条，含 golden 上下文）
+│   ├── load/locustfile.py     # Locust SSE 压测（双语汇总 + 阈值断言）
+│   ├── v1/                    # 历史数据集（不参与新体系，保留备查）
+│   └── v2/                    # 历史数据集（不参与新体系，保留备查）
 ├── front/                     # 前端源码
 │   ├── vite.config.ts         # Vite 配置（API 代理到 8000）
 │   └── src/
@@ -489,7 +499,8 @@ agentic-rag/
 | `kuzu` | 图数据库（知识图谱存储，原生持久化） |
 | `numpy` | 实体向量索引（.npz 二进制文件替代原 FAISS+SQLite） |
 | `dashscope` | 百炼 LLM / Embedding / Rerank SDK |
-| `langsmith` | LLM 追踪与评估 |
+| `langfuse` | LLM 生产追踪与评估平台（Cloud/自托管） |
+| `ragas` | RAG 标准评估指标库（faithfulness/context_precision 等） |
 | `ddgs` | DuckDuckGo 网页搜索（联网搜索降级） |
 | `pdfminer-six` + `python-docx` + `mistune` | 文档解析（PDF/DOCX/MD/TXT/CSV） |
 | `jieba` | 中文分词（BM25 检索） |
@@ -507,7 +518,8 @@ agentic-rag/
 
 | 包 | 用途 |
 |------|------|
-| `pytest` | 自动化测试（`tests/`，33 个用例） |
+| `pytest` | 自动化测试（`tests/`，47 个用例） |
+| `locust` | SSE 压测（`eval/load/locustfile.py`） |
 
 ### 前端 (Node.js)
 

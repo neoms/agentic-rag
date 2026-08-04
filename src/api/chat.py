@@ -2,7 +2,7 @@
 
 import logging
 import json
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import get_rag_service
@@ -11,6 +11,7 @@ from src.models.chat import (
     AgenticChatRequest,
     ChatHistoryResponse,
     ChatSessionsResponse,
+    FeedbackRequest,
 )
 from src.models.common import SuccessResponse
 from src.metrics import chat_errors_total
@@ -18,6 +19,27 @@ from src.metrics import chat_errors_total
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+@router.post(
+    "/feedback",
+    response_model=SuccessResponse,
+    summary="提交对话反馈（👍/👎，写回 Langfuse）",
+)
+async def submit_feedback(request: FeedbackRequest):
+    """用户反馈写回 Langfuse trace；未配置 Langfuse 时返回 503"""
+    from src.eval.langfuse import record_feedback
+
+    ok = record_feedback(request.trace_id, request.rating, request.comment)
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail="反馈服务未配置（LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY 未设置）",
+        )
+    return SuccessResponse(
+        success=True,
+        message=f"反馈已记录（trace={request.trace_id}, rating={request.rating}）",
+    )
 
 
 @router.post(

@@ -116,6 +116,11 @@ async def lifespan(app: FastAPI):
             cache_svc.close()
     except Exception as e:
         logger.warning("cache_db 关闭异常: %s", e)
+    try:
+        from src.eval.langfuse import flush as langfuse_flush
+        langfuse_flush()
+    except Exception as e:
+        logger.warning("Langfuse flush 异常: %s", e)
     logger.info("Agentic RAG 服务关闭")
 
 

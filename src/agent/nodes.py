@@ -32,6 +32,7 @@ from src.backend.reranker import rerank_documents
 from src.store.vector_store import vector_store
 from src.retrieval.bm25 import bm25_retriever
 from src.config.settings import settings
+from src.metrics import record_llm_tokens
 from src.knowledge_graph import get_kg_intent_analyzer, get_graph_retriever, get_graph_store
 from src.services.generator import format_documents_with_citations, build_generate_prompt
 from src.memory.manager import memory_manager
@@ -864,19 +865,41 @@ def _generate_node(state: AgentState, is_simple: bool) -> dict[str, Any]:
 
     # 5. 创建 LLM（快速/强模型，分别对应 LLM_MODEL_FAST / LLM_MODEL_STRONG）
     if is_simple:
-        llm = create_fast_llm(streaming=True)
+        llm = create_fast_llm(streaming=True, extra_body=settings.generation_extra_body_dict)
     else:
-        llm = create_strong_llm(streaming=True)
+        llm = create_strong_llm(streaming=True, extra_body=settings.generation_extra_body_dict)
 
     # 6. 流式生成 & 实时推送 token
-    full_answer = ""
-    for chunk in llm.stream(prompt):
-        if chunk.content:
-            full_answer += chunk.content
-            writer({
-                "event": "token",
-                "content": chunk.content,
-            })
+    # 空输出/流式异常时重试一次，避免"检索到文档却空答"的静默失败
+    def _stream_once() -> tuple[str, dict | None]:
+        buf = ""
+        usage: dict | None = None
+        try:
+            for chunk in llm.stream(prompt):
+                if chunk.content:
+                    buf += chunk.content
+                    writer({
+                        "event": "token",
+                        "content": chunk.content,
+                    })
+                um = getattr(chunk, "usage_metadata", None)
+                if um:
+                    usage = um
+        except Exception as e:  # noqa: BLE001 - 流式异常由重试兜底
+            logger.warning("生成流式调用异常 (node=%s): %s", node_id, e)
+        return buf, usage
+
+    full_answer, usage_metadata = _stream_once()
+    if not full_answer:
+        logger.warning("生成结果为空，重试一次 (node=%s)", node_id)
+        full_answer, usage_metadata = _stream_once()
+
+    if usage_metadata:
+        record_llm_tokens(
+            settings.llm_model_fast if is_simple else settings.llm_model_strong,
+            usage_metadata.get("input_tokens", 0) or 0,
+            usage_metadata.get("output_tokens", 0) or 0,
+        )
 
     logger.info(
         "生成完成: model=%s, answer_len=%d, citations=%d",

@@ -17,6 +17,7 @@ const {
   loadSession,
   newSession,
   deleteSession,
+  submitFeedback,
 } = useChat()
 
 const historyLoading = ref(false)
@@ -43,6 +44,7 @@ function onNewSession() {
         :isStreaming="isStreaming"
         :hallucinationResults="hallucinationResults"
         @send="send"
+        :on-feedback="submitFeedback"
       />
     </div>
 

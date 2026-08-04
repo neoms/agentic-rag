@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     llm_model_fast: str = ""    # 快速场景（检索评估等）
     llm_model_strong: str = ""  # 高质量场景（最终生成）
 
+    # 流式生成（generate_simple/complex）额外请求体参数（JSON）。
+    # 思考模型在长 RAG prompt 下可能把 token 预算耗尽导致空答案，
+    # 可填 {"enable_thinking": false} 关闭思考，保证最终内容必出。
+    generation_extra_body: str = ""  # 环境变量 GENERATION_EXTRA_BODY
+
     # Embedding 模型（环境变量 EMBEDDING_MODEL）
     embedding_model: str = ""
 
@@ -122,9 +127,67 @@ class Settings(BaseSettings):
     task_history_keep: int = 100      # 上传任务保留条数（超出删除最旧）
     task_history_ttl_days: int = 7    # 已完成/失败任务的保留天数（0 = 仅按条数限制）
 
+    # ========== 评估与可观测性（Langfuse / 评测） ==========
+    # Langfuse Cloud 追踪与评估平台（密钥必须成对配置，未配置时全链路优雅降级）
+    langfuse_public_key: str = ""     # 环境变量 LANGFUSE_PUBLIC_KEY
+    langfuse_secret_key: str = ""     # 环境变量 LANGFUSE_SECRET_KEY
+    langfuse_host: str = "https://cloud.langfuse.com"  # 环境变量 LANGFUSE_HOST
+
+    # LLM-as-judge 评判模型（独立强评判模型，避免被测模型自己评自己；
+    # 留空则回退 LLM_MODEL_STRONG，报告中会标注"judge 与被测同源"）
+    eval_judge_model: str = ""        # 环境变量 EVAL_JUDGE_MODEL
+    eval_judge_base_url: str = ""     # 环境变量 EVAL_JUDGE_BASE_URL（可选，默认同 LLM_BASE_URL）
+    eval_judge_api_key: str = ""      # 环境变量 EVAL_JUDGE_API_KEY（可选，默认同 DASHSCOPE_API_KEY）
+    # judge 额外请求体参数（JSON；如思考模型与 RAGAS n=3 冲突时填 {"enable_thinking": false}）
+    eval_judge_extra_body: str = ""   # 环境变量 EVAL_JUDGE_EXTRA_BODY
+
+    # 离线评估发布门禁阈值（JSON：{"metric_id": 阈值}，如 {"faithfulness": 0.85}）
+    eval_gate_thresholds: str = "{}"  # 环境变量 EVAL_GATE_THRESHOLDS
+    # 在线评估采样比例（0 < rate <= 1，最少 20 条）
+    eval_sample_rate: float = 0.1     # 环境变量 EVAL_SAMPLE_RATE
+    # 压测/评估 stub 模式（不调用真实 LLM，仅验证流水线机制）
+    eval_stub_llm: bool = False       # 环境变量 EVAL_STUB_LLM
+
+    # LLM 成本估算单价（元/百万 token；0 表示不估算成本指标）
+    llm_price_input_per_1m: float = 0.0    # 环境变量 LLM_PRICE_INPUT_PER_1M
+    llm_price_output_per_1m: float = 0.0   # 环境变量 LLM_PRICE_OUTPUT_PER_1M
+
     # ========== 文档索引后台队列 ==========
     index_workers: int = 2            # 后台索引并发 worker 数
     index_queue_max: int = 20         # 排队任务上限（超出拒绝上传，防成本/资源滥用）
+
+    @property
+    def eval_gate_thresholds_dict(self) -> dict[str, float]:
+        """解析门禁阈值 JSON 为 {metric_id: threshold}"""
+        try:
+            raw = json.loads(self.eval_gate_thresholds)
+            return {str(k): float(v) for k, v in raw.items()}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+
+    @property
+    def eval_judge_extra_body_dict(self) -> dict | None:
+        """解析 judge 额外请求体 JSON；非法或空返回 None"""
+        raw = self.eval_judge_extra_body.strip()
+        if not raw:
+            return None
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    @property
+    def generation_extra_body_dict(self) -> dict | None:
+        """解析生成节点额外请求体 JSON；非法或空返回 None"""
+        raw = self.generation_extra_body.strip()
+        if not raw:
+            return None
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
 
     @property
     def allowed_extensions_list(self) -> list[str]:

@@ -130,4 +130,12 @@ export interface UIMessage {
   isStreaming?: boolean
   hallucination_passed?: boolean
   citations?: CitationMetadata
+  trace_id?: string
+  feedback?: 'up' | 'down' | null
+}
+
+export interface FeedbackRequest {
+  trace_id: string
+  rating: number
+  comment?: string
 }

@@ -12,6 +12,7 @@ const props = defineProps<{
   error: string | null
   isStreaming: boolean
   hallucinationResults: Record<string, { passed: boolean; faithfulness: number }>
+  onFeedback?: (msgId: string, rating: number) => void
 }>()
 
 const emit = defineEmits<{
@@ -89,7 +90,7 @@ function handleSend(query: string) {
 
       <!-- 消息列表 -->
       <template v-for="msg in messages" :key="msg.id">
-        <MessageBubble :message="msg" />
+        <MessageBubble :message="msg" :on-feedback="onFeedback" />
 
         <!-- 幻觉检测结果（含忠实度分数） -->
         <div

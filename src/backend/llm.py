@@ -5,6 +5,7 @@
 """
 
 import functools
+import json
 import logging
 
 import tenacity
@@ -123,6 +124,9 @@ def create_llm_client(
     temperature: float | None = None,
     max_tokens: int | None = None,
     streaming: bool = False,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    extra_body: dict | None = None,
 ) -> ChatOpenAI:
     """创建百炼 ChatOpenAI 客户端（自动注入重试与超时）
 
@@ -131,6 +135,9 @@ def create_llm_client(
         temperature: 温度参数
         max_tokens: 最大输出 Token
         streaming: 是否启用流式输出
+        api_key: 覆盖 API Key（默认 settings.dashscope_api_key，评估 judge 可独立配置）
+        base_url: 覆盖 API 地址（默认 settings.llm_base_url）
+        extra_body: 额外请求体参数（如 enable_thinking 等模型参数）
 
     Returns:
         ChatOpenAI 实例，invoke/ainvoke 已包装重试
@@ -138,23 +145,27 @@ def create_llm_client(
     final_model = model or settings.llm_model
     final_temp = temperature if temperature is not None else settings.llm_temperature
     final_tokens = max_tokens or settings.llm_max_tokens
+    final_api_key = api_key or settings.dashscope_api_key
+    final_base_url = base_url or settings.llm_base_url
 
     # 复用已创建的客户端，避免每个请求重复实例化并重装重试包装
-    cache_key = (final_model, final_temp, final_tokens, streaming)
+    extra_key = json.dumps(extra_body or {}, sort_keys=True)
+    cache_key = (final_model, final_temp, final_tokens, streaming, final_api_key, final_base_url, extra_key)
     cached = _client_cache.get(cache_key)
     if cached is not None:
         logger.debug("复用 LLM 客户端: %s (key=%s)", final_model, cache_key)
         return cached
 
-    logger.info("创建 LLM 客户端: model=%s, temperature=%.2f, max_tokens=%d, streaming=%s",
-                final_model, final_temp, final_tokens, streaming)
+    logger.info("创建 LLM 客户端: model=%s, temperature=%.2f, max_tokens=%d, streaming=%s, base_url=%s",
+                final_model, final_temp, final_tokens, streaming, final_base_url)
     llm = ChatOpenAI(
         model=final_model,
         temperature=final_temp,
         max_tokens=final_tokens,
         streaming=streaming,
-        api_key=settings.dashscope_api_key,
-        base_url=settings.llm_base_url,
+        api_key=final_api_key,
+        base_url=final_base_url,
+        extra_body=extra_body,
         timeout=settings.llm_request_timeout,
         max_retries=0,  # 禁用内置重试，使用 tenacity 统一管理
     )
@@ -163,7 +174,10 @@ def create_llm_client(
     return llm
 
 
-def create_fast_llm(streaming: bool = False) -> ChatOpenAI:
+def create_fast_llm(
+    streaming: bool = False,
+    extra_body: dict | None = None,
+) -> ChatOpenAI:
     """创建快速 LLM 客户端（settings.llm_model_fast，环境变量 LLM_MODEL_FAST），用于评估、重排序等轻量任务"""
     logger.info("创建快速 LLM: model=%s", settings.llm_model_fast)
     return create_llm_client(
@@ -171,10 +185,14 @@ def create_fast_llm(streaming: bool = False) -> ChatOpenAI:
         temperature=0.0,
         max_tokens=1024,
         streaming=streaming,
+        extra_body=extra_body,
     )
 
 
-def create_strong_llm(streaming: bool = False) -> ChatOpenAI:
+def create_strong_llm(
+    streaming: bool = False,
+    extra_body: dict | None = None,
+) -> ChatOpenAI:
     """创建强 LLM 客户端（settings.llm_model_strong，环境变量 LLM_MODEL_STRONG），用于最终答案生成"""
     logger.info("创建强 LLM: model=%s, streaming=%s", settings.llm_model_strong, streaming)
     return create_llm_client(
@@ -182,4 +200,5 @@ def create_strong_llm(streaming: bool = False) -> ChatOpenAI:
         temperature=0.3,
         max_tokens=settings.llm_max_tokens,
         streaming=streaming,
+        extra_body=extra_body,
     )

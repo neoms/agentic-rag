@@ -24,3 +24,15 @@ export function listChatSessions(): Promise<ChatSessionsResponse> {
 export function deleteChatHistory(sessionId: string): Promise<{ success: boolean; message: string }> {
   return request(`/chat/history/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
 }
+
+export function submitFeedback(
+  traceId: string,
+  rating: number,
+  comment?: string,
+): Promise<{ success: boolean; message: string }> {
+  return request('/chat/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trace_id: traceId, rating, comment }),
+  })
+}

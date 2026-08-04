@@ -62,3 +62,10 @@ class StreamEvent(BaseModel):
     """SSE 流式事件"""
     event: str  # token / source / done / error
     data: str
+
+
+class FeedbackRequest(BaseModel):
+    """用户对话反馈（写回 Langfuse trace）"""
+    trace_id: str = Field(..., min_length=1, max_length=64, description="Langfuse trace id")
+    rating: int = Field(..., ge=1, le=5, description="评分 1-5（👎=1，👍=5）")
+    comment: str | None = Field(default=None, max_length=500, description="可选意见")

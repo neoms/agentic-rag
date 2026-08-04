@@ -32,6 +32,14 @@ from src.metrics import (
     chat_requests_total,
     chat_cache_hit_total,
     chat_stream_duration_seconds,
+    chat_ttft_seconds,
+    chat_stage_duration_seconds,
+    chat_cache_saved_llm_calls,
+)
+from src.eval.langfuse import (
+    attach_request_span,
+    build_graph_callback,
+    create_trace_id,
 )
 from src.services.generator import (
     build_generate_node_data,
@@ -40,6 +48,9 @@ from src.services.generator import (
 from src.services.hallucination_checker import check_hallucination_async
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_NO_DOCS = "未找到相关文档。"
+FALLBACK_GENERATION_FAILED = "生成回答失败，请稍后重试。"
 
 
 class RAGService:
@@ -53,6 +64,17 @@ class RAGService:
         logger.info("[stream_rag] 请求: session=%s, query='%s', web_search=%s",
                      request.session_id, request.query[:80], request.enable_web_search)
         chat_requests_total.inc()
+
+        # ── Langfuse 追踪（未配置时全链路优雅降级） ──
+        trace_id = create_trace_id()
+        langfuse_handler = build_graph_callback(trace_id)
+        cache_type: str = "none"
+        first_token_at: float | None = None  # TTFT 观测用（秒）
+
+        def _observe_ttft() -> None:
+            nonlocal first_token_at
+            if first_token_at is not None:
+                chat_ttft_seconds.observe(first_token_at - t0)
 
         # ── 多级缓存（精准 + 语义）虚拟节点：命中回放，未命中复用问题向量 ──
         # cache_lookup / cache_replay / cache_store 均为服务层虚拟节点
@@ -105,10 +127,14 @@ class RAGService:
                 chat_cache_hit_total.labels(
                     cache_info.get("cache_type", "exact")
                 ).inc()
+                cache_type = cache_info.get("cache_type", "exact")
+                chat_cache_saved_llm_calls.inc()
                 cache_path = ["cache_lookup", "cache_replay"]
                 node_start_ts["cache_replay"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="cache_replay")
                 for ev in cache_service.replay(cache_entry, cache_path):
+                    if ev.event == "token" and first_token_at is None:
+                        first_token_at = time.perf_counter()
                     yield ev
                 node_timings["cache_replay"] = round(
                     time.perf_counter() * 1000 - node_start_ts.pop("cache_replay"), 1
@@ -147,7 +173,26 @@ class RAGService:
                     data=json.dumps(node_data, ensure_ascii=False),
                 )
                 yield StreamEvent(event="node_step", data="cache_replay")
-                yield StreamEvent(event="done", data="")
+                _observe_ttft()
+                for node_id, duration_ms in node_timings.items():
+                    chat_stage_duration_seconds.labels(stage=node_id).observe(
+                        duration_ms / 1000.0
+                    )
+                attach_request_span(
+                    trace_id,
+                    input_data={"query": request.query},
+                    output_data={
+                        "answer": cache_entry["answer"],
+                        "sources": cache_entry.get("sources", []),
+                        "latency_seconds": round(time.time() - t0, 3),
+                        "cache_type": cache_type,
+                    },
+                    metadata={"use_cache": request.use_cache},
+                )
+                yield StreamEvent(
+                    event="done",
+                    data=json.dumps({"trace_id": trace_id or ""}, ensure_ascii=False),
+                )
                 memory_manager.add_interaction(
                     request.session_id, request.query, cache_entry["answer"],
                 )
@@ -197,7 +242,20 @@ class RAGService:
         }
 
         # recursion_limit=50：KG 开启时 Send 分支 + 查询重写循环可能超过默认 25
-        config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 50}
+        config: dict = {
+            "configurable": {"thread_id": request.session_id},
+            "recursion_limit": 50,
+        }
+        if langfuse_handler is not None and trace_id:
+            config["callbacks"] = [langfuse_handler]
+            config["metadata"] = {
+                "langfuse_trace_name": "agentic-rag-chat",
+                "langfuse_session_id": request.session_id,
+                "langfuse_tags": ["chat", "agentic-rag"],
+                "query": request.query[:2000],
+                "cache_type": cache_type,
+                "use_cache": request.use_cache,
+            }
         GRAPH_NODES = {
             "retrieve", "rerank_documents", "grade_documents",
             "web_search", "transform_query", "tools",
@@ -228,6 +286,8 @@ class RAGService:
                     if custom_event == "token":
                         content = chunk.get("content", "")
                         if content:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
                             yield StreamEvent(event="token", data=content)
                         continue
 
@@ -334,6 +394,18 @@ class RAGService:
                 break
 
         if has_docs:
+            # 检索到文档但生成结果为空 → 明确失败提示（不允许"有文档却空答"）
+            answer_is_fallback = False
+            if not answer:
+                answer_is_fallback = True
+                logger.error(
+                    "[stream_rag] 已检索到 %d 篇文档但生成结果为空，返回失败提示",
+                    len(documents),
+                )
+                answer = FALLBACK_GENERATION_FAILED
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+                yield StreamEvent(event="token", data=answer)
             # 填充图内生成节点的 I/O 数据
             node_data[generate_node_id] = build_generate_node_data(
                 request.query, documents, answer,
@@ -343,8 +415,8 @@ class RAGService:
             if generate_node_id in node_timings:
                 node_data[generate_node_id]["durationMs"] = node_timings[generate_node_id]
 
-            # 幻觉检测（自反思开启时）
-            if request.enable_reflection:
+            # 幻觉检测（自反思开启且非兜底/失败回答时）
+            if request.enable_reflection and not answer_is_fallback:
                 node_start_ts["check_hallucination"] = time.perf_counter() * 1000
                 yield StreamEvent(event="node_start", data="check_hallucination")
                 hallucination_passed, hallucination_faithfulness = (
@@ -378,9 +450,11 @@ class RAGService:
             logger.info("[stream_rag] 流式生成完成: answer_len=%d, node=%s",
                          len(answer), generate_node_id)
         else:
-            # 图内生成未产出答案 → 降级兜底
+            # 无检索文档 → 降级兜底
             if not answer:
-                answer = "未找到相关文档。"
+                answer = FALLBACK_NO_DOCS
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
                 yield StreamEvent(event="token", data=answer)
             node_data[generate_node_id] = build_generate_node_data(request.query, [], answer)
             if generate_node_id in node_timings:
@@ -397,8 +471,8 @@ class RAGService:
             store_result: dict = {"written": False, "reason": ""}
             if not settings.cache_enabled:
                 store_result["reason"] = "缓存功能已关闭"
-            elif not answer or answer == "未找到相关文档。":
-                store_result["reason"] = "答案为空或为兜底回答，不缓存"
+            elif not answer or answer in (FALLBACK_NO_DOCS, FALLBACK_GENERATION_FAILED):
+                store_result["reason"] = "答案为空或为兜底/失败回答，不缓存"
             elif request.enable_reflection and not hallucination_passed:
                 store_result["reason"] = "幻觉检测未通过，不缓存"
             else:
@@ -455,7 +529,26 @@ class RAGService:
             event="node_data",
             data=json.dumps(node_data, ensure_ascii=False),
         )
-        yield StreamEvent(event="done", data="")
+        _observe_ttft()
+        for node_id, duration_ms in node_timings.items():
+            chat_stage_duration_seconds.labels(stage=node_id).observe(
+                duration_ms / 1000.0
+            )
+        attach_request_span(
+            trace_id,
+            input_data={"query": request.query},
+            output_data={
+                "answer": answer,
+                "sources": [s.model_dump() for s in sources],
+                "latency_seconds": round(time.time() - t0, 3),
+                "cache_type": cache_type,
+            },
+            metadata={"use_cache": request.use_cache},
+        )
+        yield StreamEvent(
+            event="done",
+            data=json.dumps({"trace_id": trace_id or ""}, ensure_ascii=False),
+        )
         logger.info("[stream_rag] 流式对话全部完成: elapsed=%.2fs", time.time() - t0)
         chat_stream_duration_seconds.observe(time.time() - t0)
 

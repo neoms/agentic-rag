@@ -169,6 +169,65 @@ def validate_settings(s: Settings) -> list[ConfigIssue]:
             "填写 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
         ))
 
+    # ── 评估与可观测性 ──
+    lf_public = bool(s.langfuse_public_key.strip())
+    lf_secret = bool(s.langfuse_secret_key.strip())
+    if lf_public != lf_secret:
+        issues.append(_issue(
+            "LANGFUSE_PUBLIC_KEY" if not lf_public else "LANGFUSE_SECRET_KEY",
+            "（半配置）",
+            "Langfuse 公钥/私钥必须成对配置，只配一个会导致鉴权失败",
+            "同时填写 LANGFUSE_PUBLIC_KEY 与 LANGFUSE_SECRET_KEY（或两者都不填，评估链路自动降级）",
+        ))
+    if (s.langfuse_host and not _HAS_SCHEME.match(s.langfuse_host)):
+        issues.append(_issue(
+            "LANGFUSE_HOST", s.langfuse_host,
+            "必须是 http:// 或 https:// 开头的地址",
+            "填写 LANGFUSE_HOST=https://cloud.langfuse.com（或自托管地址）",
+        ))
+    if not (0.0 < s.eval_sample_rate <= 1.0):
+        issues.append(_issue(
+            "EVAL_SAMPLE_RATE", s.eval_sample_rate,
+            "在线评估采样比例必须在 (0, 1] 区间",
+            "修改为 EVAL_SAMPLE_RATE=0.1",
+        ))
+    if s.eval_gate_thresholds.strip():
+        try:
+            raw = json.loads(s.eval_gate_thresholds)
+            if not isinstance(raw, dict):
+                raise ValueError("必须是 JSON 对象")
+            for k, v in raw.items():
+                if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0.0 <= v <= 1.0):
+                    raise ValueError(f"{k}={v} 不是 [0,1] 内的数值")
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            issues.append(_issue(
+                "EVAL_GATE_THRESHOLDS", s.eval_gate_thresholds,
+                f"不是合法的阈值 JSON（{e}）",
+                '填写形如 {"faithfulness": 0.85, "context_recall": 0.70} 的 JSON',
+            ))
+    if s.eval_judge_extra_body.strip():
+        try:
+            body = json.loads(s.eval_judge_extra_body)
+            if not isinstance(body, dict):
+                raise ValueError("必须是 JSON 对象")
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            issues.append(_issue(
+                "EVAL_JUDGE_EXTRA_BODY", s.eval_judge_extra_body,
+                f"不是合法的 JSON 对象（{e}）",
+                '填写形如 {"enable_thinking": false} 的 JSON',
+            ))
+    if s.generation_extra_body.strip():
+        try:
+            gen_body = json.loads(s.generation_extra_body)
+            if not isinstance(gen_body, dict):
+                raise ValueError("必须是 JSON 对象")
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            issues.append(_issue(
+                "GENERATION_EXTRA_BODY", s.generation_extra_body,
+                f"不是合法的 JSON 对象（{e}）",
+                '填写形如 {"enable_thinking": false} 的 JSON',
+            ))
+
     # ── CORS ──
     origins = s.cors_allowed_origins_list
     if not origins:

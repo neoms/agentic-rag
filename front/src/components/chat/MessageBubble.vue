@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { UIMessage, CitationInfo } from '../../types'
-import { User, Bot, FileText, ExternalLink } from 'lucide-vue-next'
+import { User, Bot, FileText, ExternalLink, ThumbsUp, ThumbsDown } from 'lucide-vue-next'
 
 const props = defineProps<{
   message: UIMessage
+  onFeedback?: (msgId: string, rating: number) => void
 }>()
 
 // 活跃的引用弹出信息
@@ -196,6 +197,33 @@ function handleContentClick(event: MouseEvent) {
         class="mt-2 pt-2 border-t border-slate-700/50"
       >
         <p class="text-xs text-slate-500">参考 {{ message.sources.length }} 个来源文档</p>
+      </div>
+
+      <!-- 用户反馈（👍/👎，写回 Langfuse） -->
+      <div
+        v-if="message.role === 'assistant' && !message.isStreaming && message.trace_id && onFeedback"
+        class="mt-2 pt-2 border-t border-slate-700/50 flex items-center gap-1"
+      >
+        <button
+          class="p-1.5 rounded-lg transition-colors"
+          :class="message.feedback === 'up'
+            ? 'text-emerald-400 bg-emerald-400/10'
+            : 'text-slate-500 hover:text-emerald-400 hover:bg-slate-700/50'"
+          title="有帮助"
+          @click="onFeedback(message.id, 5)"
+        >
+          <ThumbsUp class="w-3.5 h-3.5" />
+        </button>
+        <button
+          class="p-1.5 rounded-lg transition-colors"
+          :class="message.feedback === 'down'
+            ? 'text-red-400 bg-red-400/10'
+            : 'text-slate-500 hover:text-red-400 hover:bg-slate-700/50'"
+          title="没有帮助"
+          @click="onFeedback(message.id, 1)"
+        >
+          <ThumbsDown class="w-3.5 h-3.5" />
+        </button>
       </div>
     </div>
 

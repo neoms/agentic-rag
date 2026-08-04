@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import type { UIMessage, SourceDocument, CitationInfo, ChatHistoryMessage } from '../types'
-import { streamChat, getChatHistory, deleteChatHistory, listChatSessions } from '../api/chat'
+import { streamChat, getChatHistory, deleteChatHistory, listChatSessions, submitFeedback } from '../api/chat'
 import * as flow from './agentFlowState'
 
 export interface SessionSummary {
@@ -136,6 +136,27 @@ export function useChat() {
       } else {
         newSession()
       }
+    }
+  }
+
+  async function submitFeedbackAction(msgId: string, rating: number) {
+    const msg = messages.value.find(m => m.id === msgId)
+    if (!msg || !msg.trace_id || msg.isStreaming) return
+    const target = rating === 5 ? 'up' : 'down'
+    if (msg.feedback === target) {
+      // 再次点击取消反馈
+      messages.value = messages.value.map(m =>
+        m.id === msgId ? { ...m, feedback: null } : m
+      )
+      return
+    }
+    try {
+      await submitFeedback(msg.trace_id, rating)
+      messages.value = messages.value.map(m =>
+        m.id === msgId ? { ...m, feedback: target } : m
+      )
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '反馈提交失败'
     }
   }
 
@@ -278,6 +299,16 @@ export function useChat() {
               break
             case 'done':
               messages.value[msgIndex].isStreaming = false
+              // done 事件携带 Langfuse trace_id（供 👍/👎 反馈使用）
+              try {
+                const payload = data ? JSON.parse(data) : {}
+                if (payload.trace_id) {
+                  messages.value[msgIndex] = {
+                    ...messages.value[msgIndex],
+                    trace_id: payload.trace_id,
+                  }
+                }
+              } catch {}
               // 缓存命中时本次只走 cache_lookup → cache_replay，主链并未执行
               const isCacheHit = streamAgentPath.value.includes('cache_replay')
               // generate_simple/complex 是图内节点，node_step 已由 updates 模式在
@@ -357,5 +388,6 @@ export function useChat() {
     loadSession,
     newSession,
     deleteSession,
+    submitFeedback: submitFeedbackAction,
   }
 }
