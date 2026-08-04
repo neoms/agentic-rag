@@ -159,7 +159,7 @@ def validate_settings(s: Settings) -> list[ConfigIssue]:
         issues.append(_issue(
             "RERANK_MODEL", "（空）",
             "RERANK_ENABLED=true 时必须指定重排序模型",
-            "填写 RERANK_MODEL=gte-rerank-v2（或百炼支持的其他重排序模型名）",
+            "在 .env 中填写 RERANK_MODEL=<重排序模型名>（示例值见 .env.example）",
         ))
 
     if not _HAS_SCHEME.match(s.llm_base_url):

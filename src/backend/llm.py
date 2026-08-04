@@ -127,7 +127,7 @@ def create_llm_client(
     """创建百炼 ChatOpenAI 客户端（自动注入重试与超时）
 
     Args:
-        model: 模型名，默认使用 settings.llm_model（qwen-plus）
+        model: 模型名，默认使用 settings.llm_model（环境变量 LLM_MODEL）
         temperature: 温度参数
         max_tokens: 最大输出 Token
         streaming: 是否启用流式输出
@@ -164,7 +164,7 @@ def create_llm_client(
 
 
 def create_fast_llm(streaming: bool = False) -> ChatOpenAI:
-    """创建快速 LLM 客户端（qwen-turbo），用于评估、重排序等轻量任务"""
+    """创建快速 LLM 客户端（settings.llm_model_fast，环境变量 LLM_MODEL_FAST），用于评估、重排序等轻量任务"""
     logger.info("创建快速 LLM: model=%s", settings.llm_model_fast)
     return create_llm_client(
         model=settings.llm_model_fast,
@@ -175,7 +175,7 @@ def create_fast_llm(streaming: bool = False) -> ChatOpenAI:
 
 
 def create_strong_llm(streaming: bool = False) -> ChatOpenAI:
-    """创建强 LLM 客户端（qwen-max），用于最终答案生成"""
+    """创建强 LLM 客户端（settings.llm_model_strong，环境变量 LLM_MODEL_STRONG），用于最终答案生成"""
     logger.info("创建强 LLM: model=%s, streaming=%s", settings.llm_model_strong, streaming)
     return create_llm_client(
         model=settings.llm_model_strong,

@@ -32,20 +32,22 @@ cp .env.example .env
 | 变量 | 说明 | 示例 |
 |------|------|------|
 | `DASHSCOPE_API_KEY` | 百炼 API Key | `sk-xxx` |
+| `LLM_MODEL` | 默认 LLM 模型 | `qwen-plus` |
+| `LLM_MODEL_FAST` | 快速评估模型（检索评估/复杂度判定/幻觉检测等轻量任务） | `qwen-turbo` |
+| `LLM_MODEL_STRONG` | 强生成模型（最终答案生成） | `qwen-max` |
+| `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
+| `RERANK_MODEL` | 重排序模型（`RERANK_ENABLED=true` 时必填） | `gte-rerank-v2` |
+
+> 模型名只在 `.env` 中配置（无内置默认值，启动校验会拒绝空值）；Docker 部署时 compose 提供示例默认值，可在宿主 `.env` 中覆盖。
 
 可选环境变量：
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `LLM_MODEL` | 默认 LLM 模型 | `qwen-plus` |
-| `LLM_MODEL_FAST` | 快速评估模型 | `qwen-turbo` |
-| `LLM_MODEL_STRONG` | 强生成模型 | `qwen-max` |
-| `EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 数据目录 | `data/chroma` |
 | `RETRIEVAL_TOP_K` | 检索候选数 | `12` |
 | `RETRIEVAL_SIMILARITY_THRESHOLD` | 语义检索过滤阈值 | `0.5` |
 | `RERANK_ENABLED` | 是否启用重排序 | `true` |
-| `RERANK_MODEL` | 重排序模型 | `gte-rerank-v2` |
 | `RERANK_TOP_K` | 重排序后保留数 | `5` |
 | `GRADE_SCORE_IRRELEVANT_MAX` | 文档评估负判定：全体文档最高分 ≤ 此值直接不相关（0 LLM） | `0.25` |
 | `GRADE_SCORE_RELEVANT_MIN` | 文档评估正判定：top1 分数下限 | `0.70` |
@@ -219,8 +221,8 @@ parallel_retrieve_merge（语义+MMR；线程池并行 BM25 / Multi-Query / KG �
   │
   ▼
 judge_complexity
-  ├─ SIMPLE  ──► generate_simple（qwen-turbo 流式）
-  └─ COMPLEX ──► generate_complex（qwen-max 流式）
+  ├─ SIMPLE  ──► generate_simple（LLM_MODEL_FAST 流式）
+  └─ COMPLEX ──► generate_complex（LLM_MODEL_STRONG 流式）
   │
   ▼
 check_hallucination（图外执行：自反思开启时检测忠实度；失败不重试）
@@ -236,16 +238,16 @@ END
 
 | 节点 | 功能 | 模型 |
 |------|------|------|
-| `analyze_kg_intent` | LLM 分析问题是否需要知识图谱（实体关系/多跳推理 → KG；定义/教程 → 降级） | qwen-turbo |
+| `analyze_kg_intent` | LLM 分析问题是否需要知识图谱（实体关系/多跳推理 → KG；定义/教程 → 降级） | LLM_MODEL_FAST |
 | `parallel_retrieve_merge` | 语义+MMR 检索 + 线程池并行 BM25/Multi-Query/KG，合并去重；语义缓存阶段的问题向量直接复用 | Embedding + jieba + Kuzu |
 | `retrieve` | 查询重写循环内的语义+MMR 检索 | Embedding |
-| `rerank_documents` | 百炼 TextReRank 二次精排（接口异常时降级为原始排序并在图中标注） | gte-rerank-v2 |
-| `grade_documents` | 文档相关性评估（含关键词快速路径，可 0 LLM） | qwen-turbo |
+| `rerank_documents` | 百炼 TextReRank 二次精排（接口异常时降级为原始排序并在图中标注） | RERANK_MODEL |
+| `grade_documents` | 文档相关性评估（含关键词快速路径，可 0 LLM） | LLM_MODEL_FAST |
 | `web_search` | 向量库无匹配时，DuckDuckGo 搜索网页作为降级方案 | HTTP |
-| `transform_query` | 文档不相关时自动重写查询（最多 3 轮） | qwen-turbo |
-| `judge_complexity` | 复杂度判定（规则快速路径 + LLM 兜底） | qwen-turbo |
-| `generate_simple` / `generate_complex` | 流式生成最终答案（简单/复杂分别用快速/强模型） | qwen-turbo / qwen-max |
-| `check_hallucination` | 图外幻觉检测：输出忠实度评分；失败不重试、答案不写缓存 | qwen-turbo |
+| `transform_query` | 文档不相关时自动重写查询（最多 3 轮） | LLM_MODEL_FAST |
+| `judge_complexity` | 复杂度判定（规则快速路径 + LLM 兜底） | LLM_MODEL_FAST |
+| `generate_simple` / `generate_complex` | 流式生成最终答案（简单/复杂分别用快速/强模型） | LLM_MODEL_FAST / LLM_MODEL_STRONG |
+| `check_hallucination` | 图外幻觉检测：输出忠实度评分；失败不重试、答案不写缓存 | LLM_MODEL_FAST |
 | `cache_lookup` / `cache_replay` / `cache_store` | 缓存虚拟节点（服务层事件驱动，非 LangGraph 节点）：查询/回放/写回 | — |
 
 ## 知识图谱模块

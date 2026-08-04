@@ -4,9 +4,9 @@
     START → analyze_kg_intent → parallel_retrieve_merge → rerank_documents
                                                            ↓
                                                      grade_documents
-                                                     ├── [RELEVANT] → judge_complexity (qwen-turbo)
-                                                     │                  ├── SIMPLE → generate_simple (qwen-turbo)
-                                                     │                  └── COMPLEX → generate_complex (qwen-max)
+                                                     ├── [RELEVANT] → judge_complexity (LLM_MODEL_FAST)
+                                                     │                  ├── SIMPLE → generate_simple (LLM_MODEL_FAST)
+                                                     │                  └── COMPLEX → generate_complex (LLM_MODEL_STRONG)
                                                      │                               ↓
                                                      │                         check_hallucination (图外)
                                                      └── [IRRELEVANT] →
@@ -123,9 +123,9 @@ def build_agent_graph() -> StateGraph:
         grade_documents        - 文档相关性评估
         web_search              - 联网搜索降级
         transform_query        - 查询重写优化
-        judge_complexity       - 复杂度判定（qwen-turbo）
-        generate_simple        - 简单生成（qwen-turbo 流式）
-        generate_complex       - 复杂生成（qwen-max 流式）
+        judge_complexity       - 复杂度判定（LLM_MODEL_FAST）
+        generate_simple        - 简单生成（LLM_MODEL_FAST 流式）
+        generate_complex       - 复杂生成（LLM_MODEL_STRONG 流式）
 
     并行策略（BM25/Multi-Query/KG）全部在 parallel_retrieve_merge 内部
     使用 ThreadPoolExecutor 并行执行，merge 只调用一次，消除状态覆盖 bug。

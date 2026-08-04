@@ -184,7 +184,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
        - 全体低分 → 直接 IRRELEVANT（补上 jieba 缺失的"负判定"能力）
        - top1 高分 + 断层 → 直接 RELEVANT（补上同义词/改写等语义盲区）
     3. jieba 快速路径（任一保留文档 overlap 达标 → RELEVANT）
-    4. qwen-turbo LLM 兜底（仅模糊地带才触发）
+    4. 快速模型 LLM 兜底（LLM_MODEL_FAST，仅模糊地带才触发）
 
     文档过滤规则（沿用原逻辑）：
     - 文档数 ≤ 3：全部保留，不做过滤（防数据丢失）
@@ -752,7 +752,7 @@ def _quick_complexity(query: str) -> str | None:
 
 
 def judge_complexity_node(state: AgentState) -> dict[str, Any]:
-    """复杂度判定节点：先走规则快速路径，不确定时降级 qwen-turbo
+    """复杂度判定节点：先走规则快速路径，不确定时降级快速模型（LLM_MODEL_FAST）
 
     规则路径：0ms，覆盖 ~60% 的常见 query 模式
     LLM 路径：~200ms（去掉文档预览，仅 query+模型名）
@@ -800,8 +800,8 @@ def judge_complexity_node(state: AgentState) -> dict[str, Any]:
 def route_after_judge(state: AgentState) -> Literal["generate_simple", "generate_complex"]:
     """复杂度判定后的条件路由
 
-    - SIMPLE → generate_simple（qwen-turbo 快速生成）
-    - COMPLEX → generate_complex（qwen-max 高质量生成）
+    - SIMPLE → generate_simple（LLM_MODEL_FAST 快速生成）
+    - COMPLEX → generate_complex（LLM_MODEL_STRONG 高质量生成）
     """
     complexity = state.get("complexity", "SIMPLE")
     if complexity == "COMPLEX":
@@ -815,12 +815,12 @@ def route_after_judge(state: AgentState) -> Literal["generate_simple", "generate
 
 
 def generate_simple_node(state: AgentState) -> dict[str, Any]:
-    """简单生成节点：使用 qwen-turbo 流式生成"""
+    """简单生成节点：使用 LLM_MODEL_FAST 配置的模型流式生成"""
     return _generate_node(state, is_simple=True)
 
 
 def generate_complex_node(state: AgentState) -> dict[str, Any]:
-    """复杂生成节点：使用 qwen-max 流式生成"""
+    """复杂生成节点：使用 LLM_MODEL_STRONG 配置的模型流式生成"""
     return _generate_node(state, is_simple=False)
 
 
@@ -862,7 +862,7 @@ def _generate_node(state: AgentState, is_simple: bool) -> dict[str, Any]:
     # 4. 构建 prompt
     prompt = build_generate_prompt(query, docs_text, chat_history)
 
-    # 5. 创建 LLM（qwen-turbo 或 qwen-max）
+    # 5. 创建 LLM（快速/强模型，分别对应 LLM_MODEL_FAST / LLM_MODEL_STRONG）
     if is_simple:
         llm = create_fast_llm(streaming=True)
     else:
@@ -880,7 +880,7 @@ def _generate_node(state: AgentState, is_simple: bool) -> dict[str, Any]:
 
     logger.info(
         "生成完成: model=%s, answer_len=%d, citations=%d",
-        "qwen-turbo" if is_simple else "qwen-max",
+        settings.llm_model_fast if is_simple else settings.llm_model_strong,
         len(full_answer),
         len(citation_metadata),
     )

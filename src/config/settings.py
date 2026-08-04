@@ -22,17 +22,17 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-    # LLM 模型配置
-    llm_model: str = "qwen-plus"
+    # LLM 模型配置（模型名一律从 .env 读取，代码中不写死具体模型）
+    llm_model: str = ""  # 环境变量 LLM_MODEL
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.0
 
-    # 不同场景下的模型选择
-    llm_model_fast: str = "qwen-turbo"    # 快速场景（检索评估等）
-    llm_model_strong: str = "qwen-max"    # 高质量场景（最终生成）
+    # 不同场景下的模型选择（环境变量 LLM_MODEL_FAST / LLM_MODEL_STRONG）
+    llm_model_fast: str = ""    # 快速场景（检索评估等）
+    llm_model_strong: str = ""  # 高质量场景（最终生成）
 
-    # Embedding 模型
-    embedding_model: str = "text-embedding-v4"
+    # Embedding 模型（环境变量 EMBEDDING_MODEL）
+    embedding_model: str = ""
 
     # ========== ChromaDB ==========
     chroma_persist_dir: str = "data/chroma"
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # ========== 重排序 ==========
     rerank_enabled: bool = True
-    rerank_model: str = "gte-rerank-v2"  # 百炼文本重排序模型
+    rerank_model: str = ""  # 百炼文本重排序模型（环境变量 RERANK_MODEL）
     rerank_top_k: int = 5  # 重排序后保留的文档数
 
     # ========== 文档评估（grade_documents score 预筛） ==========

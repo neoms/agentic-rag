@@ -673,9 +673,9 @@ class RAGService:
                 "complexity": complexity,
                 "verdict": "SIMPLE" if complexity == "SIMPLE" else "COMPLEX",
                 "action": (
-                    "问题较简单，使用 qwen-turbo 快速生成"
+                    f"问题较简单，使用快速模型 {settings.llm_model_fast} 生成"
                     if complexity == "SIMPLE"
-                    else "问题需多步推理，使用 qwen-max 高质量生成"
+                    else f"问题需多步推理，使用强模型 {settings.llm_model_strong} 生成"
                 ),
             },
         }

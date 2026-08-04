@@ -21,11 +21,11 @@ const navItems = [
 //                    ↓ (总线)
 //            → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
 //                    ↓ (全部收敛到合并)
-//            → merge → rerank → grade → [相关] → judge_complexity (qwen-turbo)
+//            → merge → rerank → grade → [相关] → judge_complexity (LLM_MODEL_FAST)
 //                                     → [不相关] → transform_query ─ retry → retrieve
 //                                               → web_search ──────────── → judge
-//            judge_complexity → [SIMPLE] → generate_simple (qwen-turbo)
-//                             → [COMPLEX] → generate_complex (qwen-max)
+//            judge_complexity → [SIMPLE] → generate_simple (LLM_MODEL_FAST)
+//                             → [COMPLEX] → generate_complex (LLM_MODEL_STRONG)
 //            generate_simple/complex → [反思] → check_hallucination
 //            check_hallucination → cache_store（缓存写入，虚拟节点） → END
 //            幻觉 FAILED：不重试，直接返回（流程图不画重试回环）
