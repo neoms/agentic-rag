@@ -18,6 +18,13 @@
     EVAL_LOAD_P95_MAX       默认 10.0（秒）
     EVAL_LOAD_ERROR_RATE_MAX 默认 0.01
   失败时进程退出码非 0
+
+安全频率模式（避免触发重排服务的偶发长尾惩罚）：
+- EVAL_LOAD_PACED=1：QPS 视为受控频率下测得、不代表容量上限，
+  报告中标注“未测容量吞吐”；其余逐请求指标（延迟/TTFT/分阶段/缓存/成本）照常输出
+- 建议低并发（-u 1）+ 宽松 wait_time（如 EVAL_LOAD_WAIT_MIN/MAX=3/6），
+  并可用 EVAL_LOAD_QUERIES='["q1","q2",...]'（JSON 数组）追加问题池，
+  让部分请求未命中缓存以采集完整流水线指标
 """
 
 from __future__ import annotations
@@ -53,6 +60,21 @@ _DEFAULT_QUERIES = [
     "小象科技成立于哪一年，总部位于哪里？",
 ]
 
+# EVAL_LOAD_QUERIES：JSON 数组，追加自定义问题到问题池（配合安全频率模式
+# 采集未命中缓存时的完整流水线指标）
+_EXTRA_QUERIES: list[str] = []
+_extra_raw = os.environ.get("EVAL_LOAD_QUERIES", "")
+if _extra_raw.strip():
+    try:
+        _parsed = json.loads(_extra_raw)
+        if not isinstance(_parsed, list) or not all(
+            isinstance(q, str) and q.strip() for q in _parsed
+        ):
+            raise ValueError("必须是字符串数组 / expected a JSON array of strings")
+        _EXTRA_QUERIES = _parsed
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[perf] EVAL_LOAD_QUERIES 解析失败 / parse failed: {e}")
+
 # EVAL_LOAD_EXCLUDE=mmr,xxx 时按子串过滤问题池（如排除因幻觉门控未缓存的问题）
 _EXCLUDE = [
     s.strip().lower()
@@ -63,8 +85,11 @@ QUERIES = [
     q for q in _DEFAULT_QUERIES
     if not any(part in q.lower() for part in _EXCLUDE)
 ] or _DEFAULT_QUERIES
+QUERIES = QUERIES + _EXTRA_QUERIES
 
 FORCE_UNIQUE = os.environ.get("EVAL_LOAD_UNIQUE", "") == "1"
+# 安全频率模式：QPS 只反映受控频率，不代表容量上限
+PACED = os.environ.get("EVAL_LOAD_PACED", "") == "1"
 
 _lock = threading.Lock()
 # 每条成功请求的记录：latency/ttft/cache_type/节点耗时/答案长度
@@ -210,7 +235,15 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
 
     latencies = sorted(r["latency"] for r in records)
     ttfts = sorted(r["ttft"] for r in records if r["ttft"] is not None)
-    qps = len(records) / duration
+    qps_observed = len(records) / duration
+    # 受控频率模式下不测容量吞吐：QPS 仅作为观测到的请求节奏保留，
+    # 报告中标注“未测容量吞吐”
+    qps = None if PACED else round(qps_observed, 3)
+    qps_note = (
+        "受控频率模式下测得，非容量上限 / paced mode, capacity QPS not measured"
+        if PACED
+        else None
+    )
 
     p50 = percentile(latencies, 0.50)
     p95 = percentile(latencies, 0.95)
@@ -295,7 +328,10 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
     print(f"  请求数 / Requests          : {requests}")
     print(f"  失败数 / Failures          : {failures}")
     print(f"  错误率 / Error rate        : {error_rate:.4f}")
-    print(f"  吞吐 / QPS                 : {qps:.2f}")
+    if PACED:
+        print("  吞吐 / QPS                 : —（受控频率模式，未测容量吞吐 / paced, not measured）")
+    else:
+        print(f"  吞吐 / QPS                 : {qps_observed:.2f}")
     print(f"  延迟 p50 / latency p50     : {p50:.3f}s")
     print(f"  延迟 p95 / latency p95     : {p95:.3f}s")
     print(f"  延迟 p99 / latency p99     : {p99:.3f}s")
@@ -328,7 +364,8 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
         "requests": requests,
         "failures": failures,
         "error_rate": round(error_rate, 6),
-        "qps": round(qps, 3),
+        "qps": qps,
+        "qps_note": qps_note,
         "latency_p50_s": round(p50, 4),
         "latency_p95_s": round(p95, 4),
         "latency_p99_s": round(p99, 4),
@@ -362,9 +399,11 @@ def _on_test_stop(environment, **_kwargs) -> None:  # noqa: ANN001
         "threshold_failures": failures_list,
         "config": {
             "force_unique": FORCE_UNIQUE,
+            "paced": PACED,
             "wait_min": float(os.environ.get("EVAL_LOAD_WAIT_MIN", "0.5")),
             "wait_max": float(os.environ.get("EVAL_LOAD_WAIT_MAX", "2.0")),
             "queries_count": len(QUERIES),
+            "extra_queries": len(_EXTRA_QUERIES),
         },
     }
     _write_report(environment, payload, passed, failures_list)
@@ -430,6 +469,12 @@ def _build_md(payload: dict, passed: bool, failures_list: list[str]) -> str:
         cost_label = "—（未配置 LLM_PRICE_* 单价 / prices not configured）"
     else:
         cost_label = "N/A（/metrics 不可达）"
+    qps = payload["qps"]
+    qps_label = (
+        "—（受控频率模式，未测容量吞吐 / paced, capacity not measured）"
+        if qps is None
+        else f"{qps:.2f}"
+    )
     lines = [
         "# 性能压测报告 / Load Test Report",
         "",
@@ -446,7 +491,7 @@ def _build_md(payload: dict, passed: bool, failures_list: list[str]) -> str:
         f"| 请求数 / Requests | {payload['requests']} |",
         f"| 失败 / Failures | {payload['failures']} |",
         f"| 错误率 / Error rate | {payload['error_rate']:.4f} |",
-        f"| 吞吐 / QPS | {payload['qps']:.2f} |",
+        f"| 吞吐 / QPS | {qps_label} |",
         f"| 端到端延迟 p50 / E2E latency p50 | {payload['latency_p50_s']:.3f}s |",
         f"| 端到端延迟 p95 / E2E latency p95 | {payload['latency_p95_s']:.3f}s |",
         f"| 端到端延迟 p99 / E2E latency p99 | {payload['latency_p99_s']:.3f}s |",

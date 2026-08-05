@@ -48,6 +48,16 @@ tool_node = ToolNode(ALL_TOOLS)
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
+def _append_path(state: AgentState, entry: str) -> list[str]:
+    """把当前节点条目追加到执行路径并返回完整列表
+
+    节点写回完整累积路径（而非依赖 reducer 拼接），这样 agent_path 通道
+    无需 reducer：单轮执行内正常累积；跨请求（同一 thread_id）从输入的
+    空列表重新开始，避免 MemorySaver 检查点导致路径跨请求累积。
+    """
+    return list(state.get("agent_path", [])) + [entry]
+
+
 def retrieve(state: AgentState) -> dict[str, Any]:
     """检索节点：语义检索 + MMR 多样性检索
 
@@ -81,7 +91,7 @@ def retrieve(state: AgentState) -> dict[str, Any]:
 
     return {
         "documents": merged,
-        "agent_path": ["retrieve"],
+        "agent_path": _append_path(state, "retrieve"),
     }
 
 
@@ -98,11 +108,11 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
 
     if not documents:
         logger.info("重排序节点: 无文档，跳过")
-        return {"agent_path": ["rerank (no docs)"]}
+        return {"agent_path": _append_path(state, "rerank (no docs)")}
 
     if not settings.rerank_enabled:
         logger.info("重排序节点: 全局禁用，透传 %d 个文档", len(documents))
-        return {"agent_path": ["rerank (disabled)"]}
+        return {"agent_path": _append_path(state, "rerank (disabled)")}
 
     reranked_all, degraded_reason = rerank_documents(
         query, documents, top_k=settings.rerank_top_k,
@@ -156,10 +166,10 @@ def rerank_documents_node(state: AgentState) -> dict[str, Any]:
             iteration, top_score, prev_best, update["rerank_improved"],
         )
     if degraded_reason:
-        update["agent_path"] = ["rerank (degraded)"]
+        update["agent_path"] = _append_path(state, "rerank (degraded)")
         logger.warning("重排序节点: 已降级为原始排序: %s", degraded_reason)
     else:
-        update["agent_path"] = ["rerank"]
+        update["agent_path"] = _append_path(state, "rerank")
     return update
 
 
@@ -244,7 +254,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
         return {
             "documents_relevant": False,
             "documents": [],
-            "agent_path": ["grade_documents (no results)"],
+            "agent_path": _append_path(state, "grade_documents (no results)"),
         }
 
     logger.info("评估节点: 评估 %d 个文档", len(documents))
@@ -325,7 +335,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
             return {
                 "documents_relevant": False,
                 "documents": filtered,
-                "agent_path": ["grade_documents (score irrelevant)"],
+                "agent_path": _append_path(state, "grade_documents (score irrelevant)"),
             }
         # 正判定：top1 高分 + 与 top2 明显断层（或仅 1 篇文档）
         top2 = scores[1] if len(scores) > 1 else None
@@ -349,7 +359,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
             return {
                 "documents_relevant": True,
                 "documents": top_docs,
-                "agent_path": ["grade_documents (score relevant)"],
+                "agent_path": _append_path(state, "grade_documents (score relevant)"),
             }
         if top1 <= settings.grade_score_irrelevant_max:
             score_ambiguous_low = True
@@ -369,7 +379,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
                 return {
                     "documents_relevant": True,
                     "documents": filtered,
-                    "agent_path": ["grade_documents (keyword match)"],
+                    "agent_path": _append_path(state, "grade_documents (keyword match)"),
                 }
 
     # ── 4. LLM 精确评估（用过滤后文档中 top 3） ──
@@ -393,7 +403,7 @@ def grade_documents(state: AgentState) -> dict[str, Any]:
     return {
         "documents_relevant": relevant,
         "documents": filtered,  # 返回值始终是过滤后的文档
-        "agent_path": ["grade_documents"],
+        "agent_path": _append_path(state, "grade_documents"),
     }
 
 
@@ -417,7 +427,7 @@ def transform_query(state: AgentState) -> dict[str, Any]:
     return {
         "rewritten_query": rewritten,
         "iteration_count": iteration_count + 1,
-        "agent_path": ["transform_query"],
+        "agent_path": _append_path(state, "transform_query"),
     }
 
 
@@ -436,7 +446,7 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
         return {
             "documents": [],
             "documents_relevant": False,
-            "agent_path": ["web_search (no results)"],
+            "agent_path": _append_path(state, "web_search (no results)"),
         }
 
     # 构造 Document 对象，metadata 包含 URL 信息供前端展示
@@ -458,7 +468,7 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
     return {
         "documents": documents,
         "documents_relevant": True,  # 标记相关，跳过 transform_query 循环
-        "agent_path": ["web_search"],
+        "agent_path": _append_path(state, "web_search"),
     }
 
 
@@ -468,9 +478,9 @@ def decide_retrieval_strategy(state: AgentState) -> dict[str, Any]:
     documents = state.get("documents", [])
 
     if not documents:
-        return {"agent_path": ["decide_strategy (no documents)"]}
+        return {"agent_path": _append_path(state, "decide_strategy (no documents)")}
 
-    return {"agent_path": ["decide_strategy"]}
+    return {"agent_path": _append_path(state, "decide_strategy")}
 
 
 # ── 评估节点停用词表（跨领域高频词，无语义区分度） ──
@@ -660,7 +670,7 @@ def parallel_retrieve_merge_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "documents": merged,
-        "agent_path": ["parallel_retrieve_merge"],
+        "agent_path": _append_path(state, "parallel_retrieve_merge"),
         "kg_context": kg_context,
         "strategy_timings_ms": strategy_timings_ms,
         # 保留各策略独立结果（供前端节点详情分别展示）
@@ -725,12 +735,12 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
 
     if not enable_kg:
         logger.info("KG 意图分析: 已禁用, kg_intent=False")
-        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (disabled)"]}
+        return {"kg_intent": False, "agent_path": _append_path(state, "analyze_kg_intent (disabled)")}
 
     store = get_graph_store()
     if store.is_empty():
         logger.info("KG 意图分析: 图谱为空, kg_intent=False")
-        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (empty kg)"]}
+        return {"kg_intent": False, "agent_path": _append_path(state, "analyze_kg_intent (empty kg)")}
 
     # ── Stage 1: Kuzu 快速实体匹配（10ms） ──
     try:
@@ -746,7 +756,7 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
             )
             return {
                 "kg_intent": True,
-                "agent_path": ["analyze_kg_intent"],
+                "agent_path": _append_path(state, "analyze_kg_intent"),
             }
         logger.debug(
             "KG 意图分析: Stage 1 无精确匹配 (best=%.2f)，进入 Stage 2 LLM 分析",
@@ -765,11 +775,11 @@ def analyze_kg_intent_node(state: AgentState) -> dict[str, Any]:
         )
         return {
             "kg_intent": should_use,
-            "agent_path": ["analyze_kg_intent"],
+            "agent_path": _append_path(state, "analyze_kg_intent"),
         }
     except Exception as e:
         logger.warning("KG 意图分析: Stage 2 异常，默认降级: %s", e)
-        return {"kg_intent": False, "agent_path": ["analyze_kg_intent (error)"]}
+        return {"kg_intent": False, "agent_path": _append_path(state, "analyze_kg_intent (error)")}
 
 
 # ==================== 复杂度判定节点 ====================
@@ -838,7 +848,7 @@ def judge_complexity_node(state: AgentState) -> dict[str, Any]:
         logger.info("复杂度判定: 规则路径 → %s (query='%s')", complexity, query[:50])
         return {
             "complexity": complexity,
-            "agent_path": ["judge_complexity (rule)"],
+            "agent_path": _append_path(state, "judge_complexity (rule)"),
         }
 
     # ── LLM 兜底（去掉文档预览，复杂度只看 query 本身） ──
@@ -859,7 +869,7 @@ def judge_complexity_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "complexity": complexity,
-        "agent_path": ["judge_complexity"],
+        "agent_path": _append_path(state, "judge_complexity"),
     }
 
 
@@ -968,5 +978,8 @@ def _generate_node(state: AgentState, is_simple: bool) -> dict[str, Any]:
     return {
         "answer": full_answer,
         "citation_metadata": citation_metadata,
-        "agent_path": ["generate_simple" if is_simple else "generate_complex"],
+        "agent_path": _append_path(
+            state,
+            "generate_simple" if is_simple else "generate_complex",
+        ),
     }

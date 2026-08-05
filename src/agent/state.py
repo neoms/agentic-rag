@@ -4,7 +4,6 @@ generate（生成）和 check_hallucination（幻觉检测）已移至外部模�
 因此 answer、hallucination_detected、citation_metadata 字段已移除。
 """
 
-import operator
 from typing import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.documents import Document
@@ -46,8 +45,10 @@ class AgentState(TypedDict):
     max_iterations: int
 
     # Agent 执行路径记录（用于可观测性）
-    # 使用 operator.add reducer 以支持并行节点（Send API）的并发写入合并
-    agent_path: Annotated[list[str], operator.add]
+    # 注意：不使用 reducer。节点写回完整累积路径（见 nodes._append_path），
+    # 若用 reducer（如 operator.add），配合 MemorySaver 检查点 + thread_id
+    # 会在同一会话内跨请求累积，导致 path 事件/前端流程图显示未执行过的节点。
+    agent_path: list[str]
 
     # 是否启用流式输出
     stream: bool

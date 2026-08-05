@@ -78,6 +78,55 @@ def test_grade_ambiguous_low_score_falls_to_llm(monkeypatch):
     assert FakeLLM.calls == 1  # 走了 LLM 兜底，而非 score 负判定
 
 
+def test_append_path_preserves_previous_entries():
+    """_append_path 读当前路径追加自身，不覆盖已有条目"""
+    from src.agent.nodes import _append_path
+
+    assert _append_path({"agent_path": ["a", "b"]}, "c") == ["a", "b", "c"]
+    assert _append_path({}, "c") == ["c"]
+
+
+def test_grade_appends_to_existing_path(monkeypatch):
+    """grade 节点写回完整路径：已有路径 + 自身条目（回归：路径跨请求累积修复）"""
+    from src.agent.nodes import grade_documents
+
+    FakeLLM.calls = 0
+    monkeypatch.setattr("src.agent.nodes.create_fast_llm", lambda: FakeLLM())
+    docs = _docs_with_scores([
+        ("### 创始团队 - 李明（CEO，联合创始人）：前阿里巴巴高级技术总监", 0.23),
+        ("### 2.3 NexusML - 机器学习平台", 0.15),
+    ])
+    out = grade_documents(_state(documents=docs, agent_path=["retrieve", "rerank"]))
+    assert out["agent_path"] == ["retrieve", "rerank", "grade_documents"]
+
+
+def test_agent_path_resets_across_runs_same_thread():
+    """同一 thread_id 连续两次运行，agent_path 不跨请求累积（MemorySaver + reducer 回归）"""
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, StateGraph
+
+    from src.agent.nodes import _append_path
+    from src.agent.state import AgentState
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("node_x", lambda state: {"agent_path": _append_path(state, "node_x")})
+    workflow.set_entry_point("node_x")
+    workflow.add_edge("node_x", END)
+    graph = workflow.compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "regression-same-thread"}}
+    inputs = {
+        "query": "小象科技CEO是谁",
+        "session_id": "regression-same-thread",
+        "agent_path": [],
+    }
+
+    graph.invoke(dict(inputs), config)
+    out2 = graph.invoke(dict(inputs), config)
+    assert out2["agent_path"] == ["node_x"], (
+        f"第二次运行路径应只含本轮节点，实际: {out2['agent_path']}"
+    )
+
+
 def test_grade_hard_low_score_irrelevant_without_llm(monkeypatch):
     """score 极低（≤ hard_min）仍直接负判，不调用 LLM"""
     FakeLLM.calls = 0
