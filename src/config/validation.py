@@ -298,6 +298,13 @@ def validate_settings(s: Settings) -> list[ConfigIssue]:
     for key, value, min_v, max_v, label, example in int_rules:
         _check_int(issues, key, value, min_v, max_v, label, example)
 
+    if not (0 <= s.eval_paced_delay <= 120):
+        issues.append(_issue(
+            "EVAL_PACED_DELAY", s.eval_paced_delay,
+            "低频模式样本间隔需在 0~120 秒之间",
+            "修改为 EVAL_PACED_DELAY=5",
+        ))
+
     float_rules = [
         ("LLM_TEMPERATURE", s.llm_temperature, 0.0, 2.0, "生成温度", "0.0"),
         ("RETRIEVAL_SIMILARITY_THRESHOLD", s.retrieval_similarity_threshold, 0.0, 1.0, "语义检索过滤阈值", "0.5"),

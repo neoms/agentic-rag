@@ -120,7 +120,7 @@ def test_compute_scores_real_path_merge(monkeypatch):
         for i in range(4)
     ]
 
-    async def fake_run_ragas(rows, with_ref):
+    async def fake_run_ragas(rows, with_ref, *, batch_size=4):
         n = len(rows)
         scores = {
             m: [round(0.7 + idx / 100, 3) for idx in range(n)]
@@ -162,7 +162,7 @@ def test_compute_scores_marks_empty_answer_and_failures(monkeypatch):
         }
     ]
 
-    async def fake_run_ragas(rows, with_ref):
+    async def fake_run_ragas(rows, with_ref, *, batch_size=4):
         return {m: [None] for m in QUALITY_IDS}, []
 
     monkeypatch.setattr("src.eval.runner._run_ragas", fake_run_ragas)

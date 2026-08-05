@@ -23,6 +23,7 @@ def build_report_payload(
     judge_isolated: bool,
     samples_count: int,
     strategy: dict[str, Any],
+    paced: bool = False,
     per_sample: list[dict[str, Any]],
     averages: dict[str, float],
     skipped: list[dict[str, Any]],
@@ -42,6 +43,7 @@ def build_report_payload(
             "strategy": strategy,
             "judge_model": judge_model,
             "judge_isolated": judge_isolated,
+            "paced": paced,
             "langfuse_url": langfuse_url,
         },
         "averages": averages,
@@ -114,6 +116,8 @@ def write_report(
         f"- judge 模型 / Judge model: `{payload['run']['judge_model']}`"
         + ("（独立评判模型 / isolated）" if payload["run"]["judge_isolated"] else "（与被测同源 / same as generator）"),
         f"- 策略 / Strategy: `{json.dumps(payload['run']['strategy'], ensure_ascii=False)}`",
+        f"- 低频不并发模式 / Paced mode: "
+        + ("开启（串行 + 样本间隔） / ON (serial + sample interval)" if payload["run"].get("paced") else "关闭 / OFF"),
         f"- Langfuse: {payload['run'].get('langfuse_url') or '（未配置 / not configured）'}",
         "",
         "## 指标结果 / Metric Averages",

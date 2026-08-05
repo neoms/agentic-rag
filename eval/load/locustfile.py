@@ -22,9 +22,12 @@
 安全频率模式（避免触发重排服务的偶发长尾惩罚）：
 - EVAL_LOAD_PACED=1：QPS 视为受控频率下测得、不代表容量上限，
   报告中标注“未测容量吞吐”；其余逐请求指标（延迟/TTFT/分阶段/缓存/成本）照常输出
-- 建议低并发（-u 1）+ 宽松 wait_time（如 EVAL_LOAD_WAIT_MIN/MAX=3/6），
-  并可用 EVAL_LOAD_QUERIES='["q1","q2",...]'（JSON 数组）追加问题池，
-  让部分请求未命中缓存以采集完整流水线指标
+- 低频不并发模式推荐命令（串行 + 数秒间隔，采集“完全正常响应”下的数据）：
+    EVAL_LOAD_PACED=1 EVAL_LOAD_WAIT_MIN=3 EVAL_LOAD_WAIT_MAX=6 \\
+    locust -f locustfile.py --host http://localhost:8000 --headless -u 1 -r 1 -t 300s
+  - 启动时会校验：并发用户 >1 或 WAIT_MIN <2s 时给出警告
+  - 可用 EVAL_LOAD_QUERIES='["q1","q2",...]'（JSON 数组）追加问题池，
+    让部分请求未命中缓存以采集完整流水线指标
 """
 
 from __future__ import annotations
@@ -220,6 +223,24 @@ def _on_test_start(environment, **_kwargs) -> None:  # noqa: ANN001
             "[perf] 提示 / Note: 无法读取 /metrics 基线，"
             "成本估算将标注 N/A（cost estimate unavailable）"
         )
+    if PACED:
+        # 低频不并发模式约束提示：单用户 + 宽松思考间隔才能保证串行、低频
+        users = (
+            getattr(environment.runner, "target_user_count", None)
+            or getattr(environment.runner, "user_count", None)
+            or 0
+        )
+        wait_min = float(os.environ.get("EVAL_LOAD_WAIT_MIN", "0.5"))
+        if users > 1:
+            print(
+                f"[perf] 警告 / WARNING: EVAL_LOAD_PACED=1 但并发用户={users}，"
+                "低频不并发模式请使用 -u 1（当前仍可能触发上游限速惩罚）"
+            )
+        if wait_min < 2:
+            print(
+                f"[perf] 警告 / WARNING: EVAL_LOAD_PACED=1 但 EVAL_LOAD_WAIT_MIN={wait_min}s 过低，"
+                "建议设置 EVAL_LOAD_WAIT_MIN/MAX=3/6，数秒间隔才能真正避开限速惩罚"
+            )
 
 
 @events.test_stop.add_listener

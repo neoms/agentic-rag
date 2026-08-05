@@ -155,6 +155,8 @@ class Settings(BaseSettings):
     eval_sample_rate: float = 0.1     # 环境变量 EVAL_SAMPLE_RATE
     # 压测/评估 stub 模式（不调用真实 LLM，仅验证流水线机制）
     eval_stub_llm: bool = False       # 环境变量 EVAL_STUB_LLM
+    # 低频不并发模式：样本间固定间隔（秒），避免高频触发上游限速/延迟惩罚
+    eval_paced_delay: float = 5.0     # 环境变量 EVAL_PACED_DELAY
 
     # LLM 成本估算单价（元/百万 token；0 表示不估算成本指标）
     llm_price_input_per_1m: float = 0.0    # 环境变量 LLM_PRICE_INPUT_PER_1M

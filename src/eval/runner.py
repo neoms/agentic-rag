@@ -182,6 +182,7 @@ async def _collect_all(
     *,
     stream_fn: StreamFn | None = None,
     stub: bool = False,
+    delay_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
     """单事件循环内逐条采集 RAG 输出（stub 模式返回确定性假数据）
 
@@ -208,6 +209,10 @@ async def _collect_all(
                 **collected,
             }
         )
+        # 低频不并发模式：样本间固定间隔，避免高频触发上游限速/延迟惩罚
+        # （stub 模式不调用真实 API，无需间隔）
+        if delay_seconds > 0 and not stub and i < len(dataset):
+            await asyncio.sleep(delay_seconds)
     return results
 
 
@@ -235,6 +240,8 @@ def _build_ragas_metrics(with_reference_contexts: bool) -> list:
 async def _run_ragas(
     collected: list[dict[str, Any]],
     with_ref_ctx: bool,
+    *,
+    batch_size: int = 4,
 ) -> tuple[dict[str, list[float | None]], list[str]]:
     """对一批样本跑 RAGAS，返回 ({metric_id: [score...]}, 过程日志)（顺序与 collected 一致）"""
     def _effective_answer(row: dict[str, Any]) -> str:
@@ -254,7 +261,7 @@ async def _run_ragas(
             for row in collected
         ]
     )
-    result, notes = await _evaluate_ragas(dataset, with_ref_ctx)
+    result, notes = await _evaluate_ragas(dataset, with_ref_ctx, batch_size=batch_size)
     if result is None:
         return {}, notes
     df = result.to_pandas()
@@ -272,6 +279,8 @@ async def _run_ragas(
 async def _evaluate_ragas(
     dataset: EvaluationDataset,
     with_ref_ctx: bool,
+    *,
+    batch_size: int = 4,
 ) -> tuple[Any | None, list[str]]:
     """包装 ragas.aevaluate，捕获其过程日志（异常对象不外露，经日志捕获）
 
@@ -295,7 +304,9 @@ async def _evaluate_ragas(
             embeddings=get_judge_ragas_embeddings(),
             raise_exceptions=False,
             show_progress=False,
-            batch_size=4,
+            # 低频不并发模式（paced）下 batch_size=1：RAGAS 逐条串行执行
+            # judge 任务，避免并发触发上游限速/延迟惩罚
+            batch_size=batch_size,
             run_config=RunConfig(max_retries=3, max_wait=10, timeout=120),
         )
         return result, notes
@@ -325,21 +336,23 @@ async def compute_scores(
     collected: list[dict[str, Any]],
     *,
     fake: bool = False,
+    paced: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, float], list[dict[str, Any]], list[str]]:
     """计算每样本分数 + 各指标平均 + 跳过/失败说明 + ragas 过程日志"""
     notes: list[str] = []
     if fake:
         raw = _fake_scores(collected)
     else:
+        batch_size = 1 if paced else 4
         with_ref = [r for r in collected if r.get("reference_contexts")]
         without_ref = [r for r in collected if not r.get("reference_contexts")]
         group_scores: dict[int, dict[str, list[float | None]]] = {}
         if with_ref:
-            scores1, notes1 = await _run_ragas(with_ref, True)
+            scores1, notes1 = await _run_ragas(with_ref, True, batch_size=batch_size)
             group_scores[1] = scores1
             notes.extend(notes1)
         if without_ref:
-            scores0, notes0 = await _run_ragas(without_ref, False)
+            scores0, notes0 = await _run_ragas(without_ref, False, batch_size=batch_size)
             group_scores[0] = scores0
             notes.extend(notes0)
 
@@ -475,6 +488,7 @@ def run_offline_eval(
     upload: bool = True,
     stream_fn: StreamFn | None = None,
     stub: bool = False,
+    paced: bool = False,
 ) -> dict[str, Any]:
     """执行一轮离线评估，返回摘要（含 gate 结果）"""
     errors = validate_dataset_file(dataset_path)
@@ -487,10 +501,14 @@ def run_offline_eval(
     async def _pipeline() -> tuple:
         """采集 + 指标计算共用同一事件循环，避免异步客户端跨循环复用"""
         collected = await _collect_all(
-            dataset, flags, stream_fn=stream_fn, stub=stub
+            dataset,
+            flags,
+            stream_fn=stream_fn,
+            stub=stub,
+            delay_seconds=settings.eval_paced_delay if paced else 0.0,
         )
         per_sample, averages, skipped, notes = await compute_scores(
-            collected, fake=fake
+            collected, fake=fake, paced=paced
         )
         return collected, per_sample, averages, skipped, notes
 
@@ -508,6 +526,7 @@ def run_offline_eval(
         judge_isolated=judge_isolated(),
         samples_count=len(dataset),
         strategy=flags,
+        paced=paced,
         per_sample=per_sample,
         averages=averages,
         skipped=skipped,
@@ -554,6 +573,12 @@ def main() -> int:
         action="store_true",
         help="按 EVAL_GATE_THRESHOLDS 判定（未配置阈值时拒绝执行），失败退出码非 0",
     )
+    parser.add_argument(
+        "--paced",
+        action="store_true",
+        help="低频不并发模式：样本间按 EVAL_PACED_DELAY（默认 5s）间隔、"
+             "RAGAS judge 串行执行，避免高频触发上游限速/延迟惩罚",
+    )
     parser.add_argument("--no-langfuse", action="store_true", help="不上传 Langfuse")
     parser.add_argument("--enable-web-search", action="store_true")
     parser.add_argument("--disable-reflection", action="store_true")
@@ -595,7 +620,11 @@ def main() -> int:
         gate=args.gate,
         upload=not args.no_langfuse,
         stub=fake,
+        paced=args.paced,
     )
+
+    if args.paced:
+        print(f"[eval] 低频不并发模式已开启 / Paced mode ON（间隔 {settings.eval_paced_delay}s，RAGAS 串行）")
 
     print("\n" + "=" * 60)
     print("Agentic RAG 评估完成 / Evaluation Finished")
