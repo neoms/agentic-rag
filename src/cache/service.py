@@ -107,7 +107,6 @@ def build_config_signature(request: AgenticChatRequest) -> str:
         "web_search": request.enable_web_search,
         "reflection": request.enable_reflection,
         "rerank": request.enable_rerank,
-        "grade_documents": request.enable_grade_documents,
         "transform_query": request.enable_transform_query,
         "bm25": request.enable_bm25,
         "multi_query": request.enable_multi_query,

@@ -197,7 +197,6 @@ docker compose restart backend
 | `enable_web_search` | bool | 联网搜索 | `false` |
 | `enable_reflection` | bool | 自反思/幻觉检测 | `true` |
 | `enable_rerank` | bool | 重排序 | `true` |
-| `enable_grade_documents` | bool | 文档相关性评估 | `true` |
 | `enable_transform_query` | bool | 查询重写（默认关闭；手动开启时最多重写 1 次） | `false` |
 | `enable_bm25` | bool | BM25 关键词检索 | `true` |
 | `enable_multi_query` | bool | Multi-Query 多角度检索 | `false` |
@@ -386,7 +385,7 @@ SSE 流式消费 `/api/v1/chat/stream`，默认小问题池（首轮写缓存后
 ## 前端功能
 
 - **Agent 流式对话**：SSE 逐字渲染，支持引文标注（[N] 悬停/点击查看来源段落）
-- **8 个策略开关**：联网搜索、自反思、重排序、文档评估、查询重写、BM25 检索、Multi-Query 检索、知识图谱检索，实时切换
+- **7 个策略开关**：联网搜索、自反思、重排序、查询重写、BM25 检索、Multi-Query 检索、知识图谱检索，实时切换（文档评估无需手动开关，由查询重写/联网搜索状态自动决定）
 - **Sidebar 流程图**：SVG 交互式状态图，含精准缓存/语义缓存/输出回放/缓存写入虚拟节点，命中/未命中箭头与节点耗时实时展示
 - **会话历史**：服务端持久化，侧边栏会话列表由 `GET /chat/sessions` 加载，删除会话同步清除后端数据
 - **用户反馈**：对话气泡 👍/👎，写回 Langfuse trace 评分

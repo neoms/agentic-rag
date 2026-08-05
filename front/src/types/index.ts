@@ -11,7 +11,6 @@ export interface AgenticChatRequest {
   enable_web_search?: boolean
   enable_reflection?: boolean
   enable_rerank?: boolean
-  enable_grade_documents?: boolean
   enable_transform_query?: boolean
   enable_bm25?: boolean
   enable_multi_query?: boolean

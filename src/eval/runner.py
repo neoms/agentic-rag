@@ -138,7 +138,6 @@ def _build_request(question: str, flags: dict[str, Any]) -> AgenticChatRequest:
         enable_web_search=flags.get("web_search", False),
         enable_reflection=flags.get("reflection", True),
         enable_rerank=flags.get("rerank", True),
-        enable_grade_documents=flags.get("grade_documents", True),
         enable_transform_query=flags.get("transform_query", False),
         enable_bm25=flags.get("bm25", True),
         enable_multi_query=flags.get("multi_query", False),
@@ -583,7 +582,6 @@ def main() -> int:
     parser.add_argument("--enable-web-search", action="store_true")
     parser.add_argument("--disable-reflection", action="store_true")
     parser.add_argument("--disable-rerank", action="store_true")
-    parser.add_argument("--disable-grade", action="store_true")
     parser.add_argument("--enable-transform-query", action="store_true",
                         help="开启查询重写（默认关闭，与生产默认一致；最多重写 1 次）")
     parser.add_argument("--disable-bm25", action="store_true")
@@ -595,7 +593,6 @@ def main() -> int:
         "web_search": args.enable_web_search,
         "reflection": not args.disable_reflection,
         "rerank": not args.disable_rerank,
-        "grade_documents": not args.disable_grade,
         "transform_query": args.enable_transform_query,
         "bm25": not args.disable_bm25,
         "multi_query": args.enable_multi_query,

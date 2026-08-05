@@ -49,10 +49,7 @@ def grade_should_run(state: AgentState) -> bool:
 
     规则：仅当"查询重写"或"联网搜索"任一开启时才运行文档评估；
     两者都关闭时跳过文档评估，直接进入复杂度判定（生成前阶段）。
-    手动关闭 enable_grade_documents 时同样不运行。
     """
-    if not state.get("enable_grade_documents", True):
-        return False
     return bool(
         state.get("enable_transform_query", False)
         or state.get("enable_web_search", False)

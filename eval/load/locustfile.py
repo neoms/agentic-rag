@@ -153,7 +153,6 @@ class RagChatUser(HttpUser):
                     "enable_web_search": False,
                     "enable_reflection": True,
                     "enable_rerank": True,
-                    "enable_grade_documents": True,
                     "enable_transform_query": True,
                     "enable_bm25": True,
                     "enable_multi_query": False,

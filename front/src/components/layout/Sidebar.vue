@@ -76,7 +76,6 @@ const ENABLED: Record<string, keyof typeof flow> = {
   bm25_retrieve: 'enableBm25',
   multi_query_retrieve: 'enableMultiQuery',
   rerank_documents: 'enableRerank',
-  grade_documents: 'enableGradeDocuments',
   web_search: 'enableWebSearch',
   transform_query: 'enableTransformQuery',
   check_hallucination: 'enableReflection',
@@ -90,10 +89,7 @@ function enabled(id: string): boolean {
 
 // 文档评估仅在查询重写或联网搜索任一开启时运行（两者都关则跳过，直接进生成判定）
 function gradeRuns(): boolean {
-  return (
-    flow.enableGradeDocuments.value &&
-    (flow.enableTransformQuery.value || flow.enableWebSearch.value)
-  )
+  return flow.enableTransformQuery.value || flow.enableWebSearch.value
 }
 
 // ── 缓存拆分子节点状态（由 cache_lookup 节点数据驱动） ──

@@ -62,7 +62,6 @@ class AgentState(TypedDict):
     # 可控节点开关
     enable_reflection: bool
     enable_rerank: bool
-    enable_grade_documents: bool
     enable_transform_query: bool
     enable_bm25: bool
     enable_multi_query: bool

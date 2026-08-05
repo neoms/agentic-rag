@@ -10,7 +10,6 @@ export const currentNode: Ref<string | null> = ref(null)
 /** Config-disabled 之外的 runtime skip (e.g. enable_kg=true but kg_intent=false) */
 export const skippedNodes: Ref<string[]> = ref([])
 export const enableRerank: Ref<boolean> = ref(true)
-export const enableGradeDocuments: Ref<boolean> = ref(true)
 // 查询重写默认关闭：仅在查询策略中手动打开时才启用（且最多重写 1 次）
 export const enableTransformQuery: Ref<boolean> = ref(false)
 export const enableWebSearch: Ref<boolean> = ref(false)

@@ -72,7 +72,6 @@ def test_grade_skipped_when_rewrite_and_web_both_off():
     state = _state(
         enable_transform_query=False,
         enable_web_search=False,
-        enable_grade_documents=True,
     )
     assert grade_should_run(state) is False
     assert route_after_rerank(state) == "judge_complexity"
@@ -97,17 +96,6 @@ def test_grade_runs_when_rewrite_or_web_enabled():
     assert route_after_rerank(_state(
         enable_transform_query=False, enable_web_search=True,
     )) == "grade_documents"
-
-
-def test_grade_disabled_by_toggle_even_if_rewrite_on():
-    """手动关闭文档评估开关 → 即使重写开启也不运行"""
-    from src.agent.graph import grade_should_run
-
-    assert grade_should_run(_state(
-        enable_transform_query=True,
-        enable_web_search=False,
-        enable_grade_documents=False,
-    )) is False
 
 
 def test_rewrite_limited_to_one_attempt():

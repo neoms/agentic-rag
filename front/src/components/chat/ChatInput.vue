@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Send, Loader2, Globe, Brain, ListOrdered, Sparkles, Shuffle, SearchCode, GitBranch, Network } from 'lucide-vue-next'
+import { Send, Loader2, Globe, Brain, ListOrdered, Shuffle, SearchCode, GitBranch, Network } from 'lucide-vue-next'
 import {
   enableWebSearch,
   enableReflection,
   enableRerank,
-  enableGradeDocuments,
   enableTransformQuery,
   enableBm25,
   enableMultiQuery,
@@ -89,18 +88,6 @@ function handleKeydown(e: KeyboardEvent) {
       >
         <ListOrdered class="w-3 h-3" />
         重排序
-      </button>
-      <button
-        @click="enableGradeDocuments = !enableGradeDocuments"
-        :class="[
-          'flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-all duration-200 border',
-          enableGradeDocuments
-            ? 'bg-violet-400/10 text-violet-400 border-violet-400/20'
-            : 'text-slate-500 border-slate-700/50 hover:text-slate-400'
-        ]"
-      >
-        <Sparkles class="w-3 h-3" />
-        文档评估
       </button>
       <button
         @click="enableTransformQuery = !enableTransformQuery"

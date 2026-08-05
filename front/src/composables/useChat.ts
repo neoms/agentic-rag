@@ -23,7 +23,6 @@ export function useChat() {
   const enableWebSearch = flow.enableWebSearch
   const enableReflection = flow.enableReflection
   const enableRerank = flow.enableRerank
-  const enableGradeDocuments = flow.enableGradeDocuments
   const enableTransformQuery = flow.enableTransformQuery
 
   // 流式状态
@@ -208,7 +207,6 @@ export function useChat() {
         enable_web_search: enableWebSearch.value,
         enable_reflection: enableReflection.value,
         enable_rerank: enableRerank.value,
-        enable_grade_documents: enableGradeDocuments.value,
         enable_transform_query: enableTransformQuery.value,
         enable_bm25: flow.enableBm25.value,
         enable_multi_query: flow.enableMultiQuery.value,

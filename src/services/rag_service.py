@@ -246,7 +246,6 @@ class RAGService:
             "enable_web_search": request.enable_web_search,
             "enable_reflection": request.enable_reflection,
             "enable_rerank": request.enable_rerank,
-            "enable_grade_documents": request.enable_grade_documents,
             "enable_transform_query": request.enable_transform_query,
             "enable_bm25": request.enable_bm25,
             "enable_multi_query": request.enable_multi_query,
@@ -355,7 +354,9 @@ class RAGService:
                     if next_node:
                         node_start_ts[next_node] = time.perf_counter() * 1000
                         yield StreamEvent(event="node_start", data=next_node)
-                    elif node_name == "rerank_documents" and request.enable_grade_documents:
+                    elif node_name == "rerank_documents" and (
+                        request.enable_transform_query or request.enable_web_search
+                    ):
                         node_start_ts["grade_documents"] = time.perf_counter() * 1000
                         yield StreamEvent(event="node_start", data="grade_documents")
 
@@ -718,7 +719,7 @@ class RAGService:
             }
 
         # ── 文档评估 ──
-        if request.enable_grade_documents:
+        if request.enable_transform_query or request.enable_web_search:
             relevant = result.get("documents_relevant", False)
             data["grade_documents"] = {
                 "input": {
