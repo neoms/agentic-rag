@@ -65,6 +65,71 @@ def test_rewrite_loop_continues_when_improved():
     assert result == "transform_query"
 
 
+def test_grade_skipped_when_rewrite_and_web_both_off():
+    """查询重写与联网搜索都关闭 → 跳过文档评估，直达 judge"""
+    from src.agent.graph import grade_should_run, route_after_merge, route_after_rerank
+
+    state = _state(
+        enable_transform_query=False,
+        enable_web_search=False,
+        enable_grade_documents=True,
+    )
+    assert grade_should_run(state) is False
+    assert route_after_rerank(state) == "judge_complexity"
+    # rerank 关闭时也应跳过 grade
+    assert route_after_merge(_state(
+        enable_rerank=False,
+        enable_transform_query=False,
+        enable_web_search=False,
+    )) == "judge_complexity"
+
+
+def test_grade_runs_when_rewrite_or_web_enabled():
+    """查询重写或联网搜索任一开启 → 文档评估运行"""
+    from src.agent.graph import grade_should_run, route_after_rerank
+
+    assert grade_should_run(_state(
+        enable_transform_query=True, enable_web_search=False,
+    )) is True
+    assert grade_should_run(_state(
+        enable_transform_query=False, enable_web_search=True,
+    )) is True
+    assert route_after_rerank(_state(
+        enable_transform_query=False, enable_web_search=True,
+    )) == "grade_documents"
+
+
+def test_grade_disabled_by_toggle_even_if_rewrite_on():
+    """手动关闭文档评估开关 → 即使重写开启也不运行"""
+    from src.agent.graph import grade_should_run
+
+    assert grade_should_run(_state(
+        enable_transform_query=True,
+        enable_web_search=False,
+        enable_grade_documents=False,
+    )) is False
+
+
+def test_rewrite_limited_to_one_attempt():
+    """查询重写最多尝试 1 次：第 2 次迭代直接降级 judge"""
+    result0 = should_continue_after_grade(_state(
+        documents=[Document(page_content="x")],
+        iteration_count=0,
+        max_iterations=1,
+        rerank_improved=True,
+        enable_transform_query=True,
+    ))
+    result1 = should_continue_after_grade(_state(
+        documents=[Document(page_content="x")],
+        iteration_count=1,
+        max_iterations=1,
+        rerank_improved=True,
+        enable_transform_query=True,
+    ))
+    assert result0 == "transform_query"
+    assert result1 == "judge_complexity"
+
+
 def test_grade_ambiguous_low_score_falls_to_llm(monkeypatch):
     """score 模糊低分区（如 top1=0.23）不再直接判不相关，交由 LLM 兜底"""
     FakeLLM.calls = 0

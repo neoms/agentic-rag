@@ -198,7 +198,7 @@ docker compose restart backend
 | `enable_reflection` | bool | 自反思/幻觉检测 | `true` |
 | `enable_rerank` | bool | 重排序 | `true` |
 | `enable_grade_documents` | bool | 文档相关性评估 | `true` |
-| `enable_transform_query` | bool | 查询重写 | `true` |
+| `enable_transform_query` | bool | 查询重写（默认关闭；手动开启时最多重写 1 次） | `false` |
 | `enable_bm25` | bool | BM25 关键词检索 | `true` |
 | `enable_multi_query` | bool | Multi-Query 多角度检索 | `false` |
 | `enable_kg` | bool | 知识图谱检索 | `true` |
@@ -219,10 +219,10 @@ analyze_kg_intent（KG 意图分析，决定是否走 KG 路径）
   ▼
 parallel_retrieve_merge（语义+MMR；线程池并行 BM25 / Multi-Query / KG 并合并去重）
   │
-  ├─ rerank_documents ──► grade_documents
+  ├─ rerank_documents ──► grade_documents（仅当查询重写或联网搜索任一开启时运行；两者都关则跳过 grade 直达 judge）
   │                        ├─ [相关] ────────────► judge_complexity
   │                        ├─ [不相关 + 联网] ────► web_search ──► judge_complexity
-  │                        └─ [不相关] ──► transform_query ──► retrieve ──► rerank_documents（最多 3 轮）
+  │                        └─ [不相关] ──► transform_query ──► retrieve ──► rerank_documents（默认关闭，最多 1 轮）
   │
   ▼
 judge_complexity
@@ -249,7 +249,7 @@ END
 | `rerank_documents` | 百炼 TextReRank 二次精排（接口异常时降级为原始排序并在图中标注） | RERANK_MODEL |
 | `grade_documents` | 文档相关性评估（含关键词快速路径，可 0 LLM） | LLM_MODEL_FAST |
 | `web_search` | 向量库无匹配时，DuckDuckGo 搜索网页作为降级方案 | HTTP |
-| `transform_query` | 文档不相关时自动重写查询（最多 3 轮） | LLM_MODEL_FAST |
+| `transform_query` | 文档不相关时自动重写查询（默认关闭，手动开启时最多 1 轮） | LLM_MODEL_FAST |
 | `judge_complexity` | 复杂度判定（规则快速路径 + LLM 兜底） | LLM_MODEL_FAST |
 | `generate_simple` / `generate_complex` | 流式生成最终答案（简单/复杂分别用快速/强模型） | LLM_MODEL_FAST / LLM_MODEL_STRONG |
 | `check_hallucination` | 图外幻觉检测：输出忠实度评分；失败不重试、答案不写缓存 | LLM_MODEL_FAST |

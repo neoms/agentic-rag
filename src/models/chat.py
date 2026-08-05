@@ -17,7 +17,8 @@ class AgenticChatRequest(BaseModel):
     enable_reflection: bool = True
     enable_rerank: bool = True
     enable_grade_documents: bool = True
-    enable_transform_query: bool = True
+    # 查询重写默认关闭（在查询策略中手动打开才启用，且最多重写 1 次）
+    enable_transform_query: bool = False
     enable_bm25: bool = True
     enable_multi_query: bool = False
     enable_kg: bool = True

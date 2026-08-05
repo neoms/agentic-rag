@@ -44,6 +44,21 @@ from src.agent.nodes import (
 logger = logging.getLogger(__name__)
 
 
+def grade_should_run(state: AgentState) -> bool:
+    """文档评估是否应运行
+
+    规则：仅当"查询重写"或"联网搜索"任一开启时才运行文档评估；
+    两者都关闭时跳过文档评估，直接进入复杂度判定（生成前阶段）。
+    手动关闭 enable_grade_documents 时同样不运行。
+    """
+    if not state.get("enable_grade_documents", True):
+        return False
+    return bool(
+        state.get("enable_transform_query", False)
+        or state.get("enable_web_search", False)
+    )
+
+
 def should_continue_after_grade(state: AgentState) -> Literal["judge_complexity", "transform_query", "web_search"]:
     """文档评估后的条件路由
 
@@ -54,7 +69,7 @@ def should_continue_after_grade(state: AgentState) -> Literal["judge_complexity"
     - 其他情况 → judge_complexity（降级处理）
     """
     enable_web = state.get("enable_web_search", False)
-    enable_transform = state.get("enable_transform_query", True)
+    enable_transform = state.get("enable_transform_query", False)
     documents = state.get("documents", [])
     logger.info("路由决策: documents_relevant=%s, documents_count=%d, web_search=%s, transform_query=%s",
                 state.get("documents_relevant", False), len(documents), enable_web, enable_transform)
@@ -75,7 +90,7 @@ def should_continue_after_grade(state: AgentState) -> Literal["judge_complexity"
         return "web_search"
 
     iteration = state.get("iteration_count", 0)
-    max_iter = state.get("max_iterations", 3)
+    max_iter = state.get("max_iterations", 1)
 
     if enable_transform and iteration < max_iter:
         # 重写循环止损：重写后检索质量（top1 重排分）没有提升则停止重写，
@@ -99,12 +114,12 @@ def route_after_merge(
     """并行检索合并后的条件路由
 
     - rerank 开启 → 正常走重排序
-    - rerank 关闭 + grade 开启 → 跳过 rerank 直接评估
+    - rerank 关闭 + grade 应运行 → 跳过 rerank 直接评估
     - 两者都关 → 跳过所有，直接去 judge_complexity
     """
     if state.get("enable_rerank", True):
         return "rerank_documents"
-    if state.get("enable_grade_documents", True):
+    if grade_should_run(state):
         logger.info("路由: rerank 已关闭 → 跳过 rerank，直接 grade")
         return "grade_documents"
     logger.info("路由: rerank+grade 均关闭 → judge_complexity")
@@ -115,9 +130,9 @@ def route_after_rerank(
     state: AgentState,
 ) -> Literal["grade_documents", "judge_complexity"]:
     """rerank 后的条件路由：是否进行文档评估"""
-    if state.get("enable_grade_documents", True):
+    if grade_should_run(state):
         return "grade_documents"
-    logger.info("路由: grade 已关闭 → judge_complexity")
+    logger.info("路由: grade 已关闭或重写/联网均关 → judge_complexity")
     return "judge_complexity"
 
 

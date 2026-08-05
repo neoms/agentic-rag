@@ -21,9 +21,11 @@ const navItems = [
 //                    ↓ (总线)
 //            → retrieve | bm25 | 多角度查询 | 图谱(意图分析自动)
 //                    ↓ (全部收敛到合并)
-//            → merge → rerank → grade → [相关] → judge_complexity (LLM_MODEL_FAST)
-//                                     → [不相关] → transform_query ─ retry → retrieve
-//                                               → web_search ──────────── → judge
+//            → merge → rerank → grade（仅当查询重写或联网搜索任一开启时运行）
+//                     → [相关] → judge_complexity (LLM_MODEL_FAST)
+//                     → [不相关] → transform_query（默认关闭，手动开启且最多 1 次）─ retry → retrieve
+//                               → web_search ──────────── → judge
+//                     两者都关 → 跳过 grade，merge/rerank 直达 judge
 //            judge_complexity → [SIMPLE] → generate_simple (LLM_MODEL_FAST)
 //                             → [COMPLEX] → generate_complex (LLM_MODEL_STRONG)
 //            generate_simple/complex → [反思] → check_hallucination
@@ -80,8 +82,18 @@ const ENABLED: Record<string, keyof typeof flow> = {
   check_hallucination: 'enableReflection',
 }
 function enabled(id: string): boolean {
+  // 文档评估的有效开关：仅当查询重写或联网搜索任一开启时才运行
+  if (id === 'grade_documents') return gradeRuns()
   const k = ENABLED[id]
   return k ? (flow[k].value as boolean) : true
+}
+
+// 文档评估仅在查询重写或联网搜索任一开启时运行（两者都关则跳过，直接进生成判定）
+function gradeRuns(): boolean {
+  return (
+    flow.enableGradeDocuments.value &&
+    (flow.enableTransformQuery.value || flow.enableWebSearch.value)
+  )
 }
 
 // ── 缓存拆分子节点状态（由 cache_lookup 节点数据驱动） ──
@@ -160,6 +172,9 @@ function isNodeExecuted(id: string): boolean {
 
 function getNotExecutedReason(id: string): string {
   const s = state(id)
+  if (s === 'disabled' && id === 'grade_documents') {
+    return '查询重写和联网搜索均关闭，文档评估被跳过'
+  }
   if (s === 'disabled') return '该节点被策略开关关闭，未执行'
   if (s === 'skipped')  return '该节点在运行时被条件路由跳过'
   if (s === 'pending')  return '该节点在本次流程中未被调度执行'
@@ -483,10 +498,10 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
         <g stroke="#475569" stroke-width="1.5" fill="none">
           <!-- grade → transform_query（左） -->
           <path :d="`M ${byId('grade_documents').x} ${byId('grade_documents').y + byId('grade_documents').h/2} C ${byId('grade_documents').x} ${byId('grade_documents').y + 40}, ${byId('transform_query').x + byId('transform_query').w/2} ${byId('transform_query').y - 12}, ${byId('transform_query').x + byId('transform_query').w/2} ${byId('transform_query').y}`"
-            marker-end="url(#arr)" :opacity="enabled('transform_query') ? 1 : 0.12"/>
+            marker-end="url(#arr)" :opacity="gradeRuns() && enabled('transform_query') ? 1 : 0.12"/>
           <!-- grade → web_search（右） -->
           <path :d="`M ${byId('grade_documents').x + byId('grade_documents').w} ${byId('grade_documents').y + byId('grade_documents').h/2} C ${byId('grade_documents').x + byId('grade_documents').w} ${byId('grade_documents').y + 40}, ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y - 12}, ${byId('web_search').x + byId('web_search').w/2} ${byId('web_search').y}`"
-            marker-end="url(#arr)" :opacity="enabled('web_search') ? 1 : 0.12"/>
+            marker-end="url(#arr)" :opacity="gradeRuns() && enabled('web_search') ? 1 : 0.12"/>
         </g>
 
         <!-- ═══ web_search → judge_complexity ═══ -->
@@ -501,9 +516,9 @@ function reflectionBypassColor(): string   { return enabled('check_hallucination
           :opacity="enabled('transform_query') ? 0.85 : 0.12" marker-end="url(#arrAmber)"/>
 
         <!-- ═══ 分支标签 ═══ -->
-        <text x="196" :y="byId('grade_documents').y + 46" class="text-[10px] fill-green-500/70">相关</text>
-        <text x="286" :y="byId('grade_documents').y + 24" class="text-[10px] fill-orange-400/70">不相关+联网</text>
-        <text x="100" :y="byId('grade_documents').y + 24" class="text-[10px] fill-orange-400/70">不相关</text>
+        <text x="196" :y="byId('grade_documents').y + 46" :opacity="gradeRuns() ? 1 : 0" class="text-[10px] fill-green-500/70">相关</text>
+        <text x="286" :y="byId('grade_documents').y + 24" :opacity="gradeRuns() ? 1 : 0" class="text-[10px] fill-orange-400/70">不相关+联网</text>
+        <text x="100" :y="byId('grade_documents').y + 24" :opacity="gradeRuns() ? 1 : 0" class="text-[10px] fill-orange-400/70">不相关</text>
         <!-- judge 分支标签 -->
         <text x="140" :y="byId('judge_complexity').y + 20" class="text-[10px] fill-cyan-400/70">SIMPLE</text>
         <text x="288" :y="byId('judge_complexity').y + 20" class="text-[10px] fill-amber-400/70">COMPLEX</text>

@@ -235,7 +235,8 @@ class RAGService:
             "rewritten_query": "",
             "documents_relevant": False,
             "iteration_count": 0,
-            "max_iterations": 3,
+            # 查询重写最多尝试 1 次（默认关闭；手动开启时也只允许一次重写）
+            "max_iterations": 1,
             "rerank_top_score": 0.0,
             "best_rerank_score": 0.0,
             "rerank_improved": True,
@@ -743,7 +744,7 @@ class RAGService:
                 "input": {
                     "original_query": query,
                     "iteration": iteration,
-                    "max_iterations": result.get("max_iterations", 3),
+                    "max_iterations": result.get("max_iterations", 1),
                 },
                 "output": {
                     "rewritten_query": rewritten_q,
