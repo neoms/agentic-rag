@@ -55,6 +55,11 @@ def rerank_documents(
             # rerank_score，供文档评估的 score 通道使用。
             top_n=len(doc_texts),
             return_documents=False,
+            # 显式超时：SDK 默认 300s，服务端偶发慢时不能让请求干等数分钟，
+            # 超时抛异常后走下方降级分支（原始排序 + degraded 标注）
+            # 注意参数名必须是 request_timeout：SDK 用该 key 解析 HTTP 超时，
+            # 传 timeout 会被当成业务参数发给服务端、HTTP 层仍用默认 300s
+            request_timeout=settings.rerank_request_timeout,
         )
 
         if response.status_code != 200 or not response.output:

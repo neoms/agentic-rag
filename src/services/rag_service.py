@@ -390,7 +390,9 @@ class RAGService:
         # 发送检索结果来源
         sources = [
             SourceDocument(
-                content=doc.page_content[:300],
+                # 完整 chunk 内容：评估（离线/在线 RAGAS）与缓存条目需要
+                # 完整检索上下文，前端展示侧自行截断，这里不再提前截断
+                content=doc.page_content,
                 metadata=doc.metadata,
             )
             for doc in documents

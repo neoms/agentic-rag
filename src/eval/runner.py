@@ -534,6 +534,11 @@ def run_offline_eval(
     return summary
 
 
+def gate_requires_thresholds(gate: bool, thresholds: dict[str, float]) -> bool:
+    """门禁前置校验：--gate 开启但未配置任何阈值时返回 True（应拒绝执行）"""
+    return gate and not thresholds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Agentic RAG 标准评估 runner")
     parser.add_argument("--dataset", required=True, help="数据集 JSONL 路径")
@@ -544,7 +549,11 @@ def main() -> int:
     )
     parser.add_argument("--name", default="smoke", help="数据集/运行名")
     parser.add_argument("--fake-scores", action="store_true", help="stub 冒烟：确定性假分数，不调用真实 LLM")
-    parser.add_argument("--gate", action="store_true", help="按 EVAL_GATE_THRESHOLDS 判定，失败退出码非 0")
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="按 EVAL_GATE_THRESHOLDS 判定（未配置阈值时拒绝执行），失败退出码非 0",
+    )
     parser.add_argument("--no-langfuse", action="store_true", help="不上传 Langfuse")
     parser.add_argument("--enable-web-search", action="store_true")
     parser.add_argument("--disable-reflection", action="store_true")
@@ -567,6 +576,14 @@ def main() -> int:
         "kg": args.enable_kg,
     }
     fake = args.fake_scores or settings.eval_stub_llm
+    if gate_requires_thresholds(args.gate, settings.eval_gate_thresholds_dict):
+        print(
+            "\n门禁未配置阈值 / Gate thresholds not configured ✘\n"
+            "  --gate 需要 EVAL_GATE_THRESHOLDS 指定各指标阈值，否则门禁恒通过、无意义。\n"
+            "  请先在 .env 中配置，形如：EVAL_GATE_THRESHOLDS="
+            '{"faithfulness": 0.85, "answer_relevancy": 0.80, "factual_correctness": 0.80}'
+        )
+        return 2
 
     summary = run_offline_eval(
         Path(args.dataset),

@@ -2,7 +2,7 @@
 
 import asyncio
 
-from src.metrics import llm_calls_total, embedding_calls_total
+from src.metrics import llm_calls_total, llm_tokens_total, embedding_calls_total
 
 
 def test_metrics_endpoint_exposes_counters(app_client):
@@ -43,6 +43,42 @@ def test_llm_client_counting_wrapper():
     fake.invoke("x")
     list(fake.stream("x"))
     assert llm_calls_total.labels(model="fake-model")._value.get() == base + 2
+
+
+def test_llm_wrapper_records_tokens():
+    """所有 LLM 调用统一在客户端包装层记录 token 用量（生成节点不再重复计）"""
+    import src.backend.llm as llm_mod
+
+    class FakeMsg:
+        usage_metadata = {"input_tokens": 10, "output_tokens": 4}
+
+    class FakeLLM:
+        model = "fake-model"
+
+        def invoke(self, *a, **k):
+            return FakeMsg()
+
+        async def ainvoke(self, *a, **k):
+            return FakeMsg()
+
+        def stream(self, *a, **k):
+            yield FakeMsg()
+
+        async def astream(self, *a, **k):
+            yield FakeMsg()
+
+    fake = FakeLLM()
+    llm_mod._install_retry_on_llm(fake)
+    in_base = llm_tokens_total.labels(model="fake-model", type="input")._value.get()
+    out_base = llm_tokens_total.labels(model="fake-model", type="output")._value.get()
+
+    fake.invoke("x")
+    assert llm_tokens_total.labels(model="fake-model", type="input")._value.get() == in_base + 10
+    assert llm_tokens_total.labels(model="fake-model", type="output")._value.get() == out_base + 4
+
+    list(fake.stream("x"))
+    assert llm_tokens_total.labels(model="fake-model", type="input")._value.get() == in_base + 20
+    assert llm_tokens_total.labels(model="fake-model", type="output")._value.get() == out_base + 8
 
 
 def test_embedding_counting(stub_embedding):

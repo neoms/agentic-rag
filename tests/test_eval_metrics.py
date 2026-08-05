@@ -5,6 +5,7 @@ import json
 from src.eval.dataset import load_dataset, validate_dataset_file
 from src.eval.metrics import ALL_METRICS, QUALITY_METRICS, METRIC_BY_ID, display_name
 from src.eval.report import check_gate
+from src.eval.runner import gate_requires_thresholds
 
 
 def test_metric_registry_bilingual_and_unique():
@@ -36,6 +37,13 @@ def test_gate_check():
     # 空阈值恒通过
     passed, _ = check_gate(averages, {})
     assert passed
+
+
+def test_gate_requires_thresholds():
+    """--gate 开启但未配置阈值时必须拒绝执行，避免门禁形同虚设"""
+    assert gate_requires_thresholds(gate=True, thresholds={}) is True
+    assert gate_requires_thresholds(gate=True, thresholds={"faithfulness": 0.85}) is False
+    assert gate_requires_thresholds(gate=False, thresholds={}) is False
 
 
 def test_dataset_validation(tmp_path):

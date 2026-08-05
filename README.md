@@ -332,7 +332,7 @@ uv run python -m src.eval.runner --dataset eval/datasets/smoke.jsonl --fake-scor
 # 真实评估（需要外网：DashScope + 独立 judge）
 uv run python -m src.eval.runner --dataset eval/datasets/smoke.jsonl --name smoke
 
-# 发布门禁（失败退出码非 0，按 EVAL_GATE_THRESHOLDS 判定）
+# 发布门禁（失败退出码非 0，按 EVAL_GATE_THRESHOLDS 判定；未配置阈值时拒绝执行）
 uv run python -m src.eval.runner --dataset eval/datasets/v3.jsonl --gate
 ```
 

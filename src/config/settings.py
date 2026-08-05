@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     rerank_enabled: bool = True
     rerank_model: str = ""  # 百炼文本重排序模型（环境变量 RERANK_MODEL）
     rerank_top_k: int = 5  # 重排序后保留的文档数
+    # TextReRank 请求超时（秒）：dashscope SDK 默认 300s，服务端偶发慢时
+    # 会让整条请求干等数分钟；超时后降级为原始排序（degraded 标注），
+    # 宁可损失一次精排也不阻塞链路
+    rerank_request_timeout: int = 10  # 环境变量 RERANK_REQUEST_TIMEOUT
 
     # ========== 文档评估（grade_documents score 预筛） ==========
     # 阈值标定建议：先跑一轮真实数据，观察 rerank_score 分布再微调

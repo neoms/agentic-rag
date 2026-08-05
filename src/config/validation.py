@@ -161,6 +161,12 @@ def validate_settings(s: Settings) -> list[ConfigIssue]:
             "RERANK_ENABLED=true 时必须指定重排序模型",
             "在 .env 中填写 RERANK_MODEL=<重排序模型名>（示例值见 .env.example）",
         ))
+    if not (1 <= s.rerank_request_timeout <= 120):
+        issues.append(_issue(
+            "RERANK_REQUEST_TIMEOUT", s.rerank_request_timeout,
+            "重排序请求超时必须为 1~120 秒之间的整数",
+            "修改为 RERANK_REQUEST_TIMEOUT=10（越小越不容易卡链路，越大越容忍慢响应）",
+        ))
 
     if not _HAS_SCHEME.match(s.llm_base_url):
         issues.append(_issue(
