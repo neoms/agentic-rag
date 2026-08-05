@@ -321,7 +321,7 @@ analyze_kg_intent (LLM 意图分析)
 {"question": "用户问题", "reference": "标准答案", "reference_contexts": ["golden 上下文", "..."]}
 ```
 
-`reference_contexts` 可选：缺失时自动跳过 context_precision/context_recall 并在报告标注。内置冒烟数据集 `eval/datasets/smoke.jsonl`（5 条，覆盖全部 5 个质量指标）；旧的 `eval/v1`、`v2` 数据作为历史产物保留，不参与新体系。
+`reference_contexts` 可选：缺失时自动跳过 context_precision/context_recall 并在报告标注。内置冒烟数据集 `eval/datasets/smoke.jsonl`（5 条，覆盖全部 5 个质量指标）。
 
 ### 运行离线评估
 
